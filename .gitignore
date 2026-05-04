@@ -1,0 +1,30 @@
+# Dependencies and package manager cache
+node_modules/
+npm-cache/
+
+# Local runtime data
+senler/logs/
+senler/uploads/
+senler/campaign.ui.json
+salebot/campaign.ui.json
+
+# Local operator configuration
+senler/groups.json
+salebot/audiences.json
+
+# Local Codex/test artifacts
+codex-home-test/
+x/
+senler-mailings-skill/
+
+# Screenshots and temporary media captured during setup/debugging
+*.png
+*.jpg
+*.jpeg
+*.webp
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
