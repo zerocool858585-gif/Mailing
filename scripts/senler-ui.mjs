@@ -200,15 +200,8 @@ const page = String.raw`<!doctype html>
         <details class="setup">
           <summary>Команды для PowerShell</summary>
           <div class="setup-body command-setup" data-start-url="https://senler.ru/">
-            <label>Папка утилиты</label>
-            <input class="appDirInput">
-            <button type="button" class="useCurrentDir" style="margin-top:8px">Подставить текущую папку</button>
             <div class="hint" style="margin-top:10px">Windows PowerShell:</div>
             <code class="cmdWin"></code>
-            <div class="hint" style="margin-top:10px">macOS Terminal:</div>
-            <code class="cmdMac"></code>
-            <div class="hint" style="margin-top:10px">Linux Terminal:</div>
-            <code class="cmdLinux"></code>
           </div>
         </details>
         <label>Группы</label>
@@ -278,15 +271,8 @@ const page = String.raw`<!doctype html>
           <details class="setup">
             <summary>Команды для PowerShell</summary>
             <div class="setup-body command-setup" data-start-url="https://salebot.pro/">
-              <label>Папка утилиты</label>
-              <input class="appDirInput">
-              <button type="button" class="useCurrentDir" style="margin-top:8px">Подставить текущую папку</button>
               <div class="hint" style="margin-top:10px">Windows PowerShell:</div>
               <code class="cmdWin"></code>
-              <div class="hint" style="margin-top:10px">macOS Terminal:</div>
-              <code class="cmdMac"></code>
-              <div class="hint" style="margin-top:10px">Linux Terminal:</div>
-              <code class="cmdLinux"></code>
             </div>
           </details>
           <label>Аудитории</label>
@@ -367,7 +353,6 @@ const page = String.raw`<!doctype html>
     $("tabCommunities").onclick = () => activateTab("communities");
     $("tabAudiences").onclick = () => activateTab("audiences");
     activateTab(localStorage.getItem("mailing-ui-tab") || "senler");
-    const defaultAppDir = ${JSON.stringify(ROOT)};
     const saleBotSheetUrl = ${JSON.stringify(SALEBOT_SHEET_URL)};
     const saleBotProjectId = ${JSON.stringify(SALEBOT_PROJECT_ID)};
     const saleBotSheetId = ${JSON.stringify(SALEBOT_SHEET_ID)};
@@ -381,56 +366,12 @@ const page = String.raw`<!doctype html>
       if (!match) return value || "";
       return match[3] + "." + match[2] + "." + match[1] + " " + match[4] + ":" + match[5];
     }
-    function psQuote(text) {
-      return "'" + String(text).replace(/'/g, "''") + "'";
-    }
-    function shQuote(text) {
-      return "'" + String(text).replace(/'/g, "'\\''") + "'";
-    }
     function renderCommands() {
       document.querySelectorAll(".command-setup").forEach(box => {
-        const input = box.querySelector(".appDirInput");
-        if (!input.value) input.value = localStorage.getItem("mailing-ui-app-dir") || defaultAppDir;
-        const dir = input.value.trim() || defaultAppDir;
         const url = box.dataset.startUrl || "https://senler.ru/";
-        box.querySelector(".cmdWin").textContent = [
-          "cd " + psQuote(dir),
-          "npm i",
-          "$chrome = \"$env:ProgramFiles\\Google\\Chrome\\Application\\chrome.exe\"",
-          "if (!(Test-Path $chrome)) { $chrome = \"$env:ProgramFiles(x86)\\Google\\Chrome\\Application\\chrome.exe\" }",
-          "& $chrome --remote-debugging-port=9222 --user-data-dir=\"$env:USERPROFILE\\Documents\\Codex\\chrome-senler\" " + url,
-          "npm run senler-ui:dev"
-        ].join("\n");
-        box.querySelector(".cmdMac").textContent = [
-          "cd " + shQuote(dir),
-          "npm i",
-          "open -na \"Google Chrome\" --args --remote-debugging-port=9222 --user-data-dir=\"$HOME/Documents/Codex/chrome-senler\" " + shQuote(url),
-          "npm run senler-ui:dev"
-        ].join("\n");
-        box.querySelector(".cmdLinux").textContent = [
-          "cd " + shQuote(dir),
-          "npm i",
-          "google-chrome --remote-debugging-port=9222 --user-data-dir=\"$HOME/.cache/chrome-senler\" " + shQuote(url) + " &",
-          "npm run senler-ui:dev"
-        ].join("\n");
+        box.querySelector(".cmdWin").textContent = "& \"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe\" --remote-debugging-port=9222 --user-data-dir=\"$env:USERPROFILE\\Documents\\Codex\\chrome-senler\" " + url;
       });
     }
-    document.querySelectorAll(".appDirInput").forEach(input => {
-      input.oninput = () => {
-        localStorage.setItem("mailing-ui-app-dir", input.value);
-        document.querySelectorAll(".appDirInput").forEach(other => {
-          if (other !== input) other.value = input.value;
-        });
-        renderCommands();
-      };
-    });
-    document.querySelectorAll(".useCurrentDir").forEach(btn => {
-      btn.onclick = () => {
-        const input = btn.closest(".command-setup").querySelector(".appDirInput");
-        input.value = defaultAppDir;
-        input.dispatchEvent(new Event("input"));
-      };
-    });
     renderCommands();
     function connectLiveReload() {
       if (!window.EventSource) return;
