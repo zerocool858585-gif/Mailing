@@ -263,6 +263,7 @@ async function fillEditor(cdp, campaign) {
           if (fmt.bold) attrs.bold = true;
           if (fmt.italic) attrs.italic = true;
           if (fmt.underline) attrs.underline = true;
+          if (fmt.link) attrs.link = String(fmt.link);
           if (Object.keys(attrs).length) quill.formatText(offset, length, attrs, "user");
         }
         for (const phrase of campaign.boldPhrases || []) {
@@ -296,7 +297,7 @@ async function fillEditor(cdp, campaign) {
         editorCount: document.querySelectorAll(".ql-editor").length,
         hasQuill: !!window.Quill,
         bold: (editor?.innerHTML || "").includes("<strong>"),
-        formatted: /<(strong|em|u)>/.test(editor?.innerHTML || "")
+        formatted: /<(strong|em|u|a)\b/.test(editor?.innerHTML || "")
       };
     })()`
   );

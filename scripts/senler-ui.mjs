@@ -119,18 +119,30 @@ const page = String.raw`<!doctype html>
     input, textarea, select { width: 100%; box-sizing: border-box; border: 1px solid #c7d0dc; border-radius: 6px; padding: 10px; font: inherit; background: #fff; }
     textarea { min-height: 320px; resize: vertical; line-height: 1.35; }
     textarea.compact { min-height: 90px; }
-    .toolbar { display: flex; gap: 6px; align-items: center; border: 1px solid #c7d0dc; border-bottom: 0; border-radius: 6px 6px 0 0; padding: 8px; background: #f8fafc; }
+    .toolbar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; border: 1px solid #c7d0dc; border-bottom: 0; border-radius: 6px 6px 0 0; padding: 8px; background: #f8fafc; }
     .toolbar button { min-width: 36px; height: 34px; padding: 0; border: 1px solid #c7d0dc; background: #fff; }
     .toolbar button.active { background: #dbeafe; border-color: #60a5fa; }
+    .toolbar select { width: auto; min-width: 170px; min-height: 34px; padding: 6px 30px 6px 9px; font-size: 13px; }
     #editor { min-height: 360px; border: 1px solid #c7d0dc; border-radius: 0 0 6px 6px; padding: 12px; line-height: 1.4; white-space: pre-wrap; outline: none; background: #fff; overflow: auto; }
     #sbEditor { min-height: 280px; border: 1px solid #c7d0dc; border-radius: 0 0 6px 6px; padding: 12px; line-height: 1.4; white-space: pre-wrap; outline: none; background: #fff; overflow: auto; }
     #editor:focus, #sbEditor:focus { border-color: #2563eb; box-shadow: 0 0 0 2px rgba(37,99,235,.12); }
+    #editor a, #sbEditor a { color: #2563eb; text-decoration: underline; text-underline-offset: 2px; }
+    #editor code, #sbEditor code { padding: 1px 4px; border-radius: 4px; background: #eef2f7; color: #111827; font-family: Consolas, Menlo, monospace; font-size: .92em; }
+    #editor pre, #sbEditor pre { margin: 8px 0; padding: 10px; border-radius: 6px; background: #111827; color: #d1fae5; font-family: Consolas, Menlo, monospace; font-size: 13px; white-space: pre-wrap; }
+    #editor .tg-spoiler, #sbEditor .tg-spoiler { border-radius: 4px; background: #d8dee6; color: transparent; }
+    #editor .tg-spoiler:hover, #sbEditor .tg-spoiler:hover { color: inherit; }
+    #editor blockquote, #sbEditor blockquote { margin: 8px 0; padding: 6px 10px; border-left: 3px solid #94a3b8; color: #475569; background: #f8fafc; }
     .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-    .actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
-    button { border: 0; border-radius: 6px; padding: 10px 14px; font: inherit; font-weight: 700; cursor: pointer; background: #e6ebf2; color: #17202a; }
+    .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; align-items: center; }
+    .action-bar { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 10px; margin-top: 14px; align-items: center; }
+    .action-group { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    .final-action { margin-left: auto; padding-left: 10px; border-left: 1px solid #d8dee6; }
+    button { border: 0; border-radius: 6px; padding: 7px 10px; min-height: 34px; font: inherit; font-size: 13px; font-weight: 700; cursor: pointer; background: #e6ebf2; color: #17202a; }
     button.primary { background: #2563eb; color: white; }
-    button.danger { background: #16a34a; color: white; }
+    button.final { background: #16a34a; color: white; }
+    button.danger { background: #dc2626; color: white; }
     button:disabled { opacity: .55; cursor: wait; }
+    select.action-select { width: auto; min-width: 210px; min-height: 34px; padding: 7px 32px 7px 10px; font-size: 13px; font-weight: 650; }
     .hint { color: #5d6b7a; font-size: 13px; line-height: 1.4; }
     .groups { display: grid; gap: 10px; }
     .check { display: flex; align-items: center; gap: 8px; font-size: 14px; }
@@ -145,7 +157,7 @@ const page = String.raw`<!doctype html>
     details.setup .setup-body { border-top: 1px solid #d8dee6; padding: 10px; }
     details.setup code { display: block; margin-top: 8px; padding: 10px; border-radius: 6px; background: #111827; color: #d1fae5; font-size: 12px; white-space: pre-wrap; word-break: break-word; }
     .log-actions { display: flex; gap: 8px; margin-top: 10px; }
-    @media (max-width: 900px) { .grid, .row { grid-template-columns: 1fr; } main { padding: 14px; } }
+    @media (max-width: 900px) { .grid, .row { grid-template-columns: 1fr; } main { padding: 14px; } .action-bar { display: grid; } .final-action { margin-left: 0; padding-left: 0; border-left: 0; } select.action-select { width: 100%; } }
   </style>
 </head>
 <body>
@@ -183,25 +195,45 @@ const page = String.raw`<!doctype html>
         </div>
         <label>Текст рассылки</label>
         <div class="toolbar" aria-label="Форматирование текста">
-          <button type="button" data-cmd="bold"><b>B</b></button>
-          <button type="button" data-cmd="italic"><i>I</i></button>
-          <button type="button" data-cmd="underline"><u>U</u></button>
+          <button type="button" data-editor="editor" data-cmd="bold" title="Жирный"><b>B</b></button>
+          <button type="button" data-editor="editor" data-cmd="italic" title="Курсив"><i>I</i></button>
+          <button type="button" data-editor="editor" data-cmd="underline" title="Подчёркнутый"><u>U</u></button>
+          <button type="button" data-editor="editor" data-format-link title="Ссылка">Link</button>
+          <select id="senlerVariable" aria-label="Переменные Senler">
+            <option value="">Переменные</option>
+            <option value="%username%">%username%</option>
+            <option value="%fullname%">%fullname%</option>
+            <option value="%userid%">%userid%</option>
+            <option value="%domain%">%domain%</option>
+            <option value="{%email%}">{%email%}</option>
+            <option value="[%var%]">[%var%]</option>
+            <option value="[rand]текст 1|текст 2|текст 3[/rand]">[rand]текст 1|текст 2|текст 3[/rand]</option>
+            <option value="[date]%e %month|+1 day[/date]">[date]%e %month|+1 day[/date]</option>
+            <option value="__custom_user__">__custom_user__</option>
+            <option value="__custom_global__">__custom_global__</option>
+          </select>
         </div>
         <div id="editor" contenteditable="true"></div>
-        <div class="actions">
-          <button id="save" class="primary">Сохранить кампанию</button>
-          <button id="openTabs">Открыть вкладки</button>
-          <button id="validate">Проверить</button>
-          <button id="run" class="danger">Создать и активировать</button>
+        <div class="action-bar">
+          <div class="action-group">
+            <button id="save" class="primary">Сохранить</button>
+            <button id="openTabs">Открыть вкладки</button>
+            <button id="validate">Проверить</button>
+          </div>
+          <div class="action-group final-action">
+            <button id="run" class="final">Создать и активировать</button>
+          </div>
         </div>
       </section>
       <aside>
         <div class="warn">Перед созданием убедись, что Chrome запущен с remote debugging и ты залогинен в Senler.</div>
         <details class="setup">
-          <summary>Команды для PowerShell</summary>
+          <summary>Команды запуска браузера</summary>
           <div class="setup-body command-setup" data-start-url="https://senler.ru/">
             <div class="hint" style="margin-top:10px">Windows PowerShell:</div>
             <code class="cmdWin"></code>
+            <div class="hint" style="margin-top:10px">macOS Terminal:</div>
+            <code class="cmdMac"></code>
           </div>
         </details>
         <label>Группы</label>
@@ -235,9 +267,15 @@ const page = String.raw`<!doctype html>
           </div>
           <label>Текст блока</label>
           <div class="toolbar" aria-label="Форматирование текста SaleBot">
-            <button type="button" data-sb-cmd="bold"><b>B</b></button>
-            <button type="button" data-sb-cmd="italic"><i>I</i></button>
-            <button type="button" data-sb-cmd="underline"><u>U</u></button>
+            <button type="button" data-editor="sbEditor" data-cmd="bold" title="Жирный"><b>B</b></button>
+            <button type="button" data-editor="sbEditor" data-cmd="italic" title="Курсив"><i>I</i></button>
+            <button type="button" data-editor="sbEditor" data-cmd="underline" title="Подчёркнутый"><u>U</u></button>
+            <button type="button" data-editor="sbEditor" data-cmd="strikeThrough" title="Зачёркнутый"><s>S</s></button>
+            <button type="button" data-editor="sbEditor" data-inline-code title="Код">Code</button>
+            <button type="button" data-editor="sbEditor" data-code-block title="Блок кода">Pre</button>
+            <button type="button" data-editor="sbEditor" data-spoiler title="Спойлер">Spoiler</button>
+            <button type="button" data-editor="sbEditor" data-quote title="Цитата">Quote</button>
+            <button type="button" data-editor="sbEditor" data-format-link title="Ссылка">Link</button>
           </div>
           <div id="sbEditor" contenteditable="true"></div>
           <div class="row">
@@ -257,22 +295,31 @@ const page = String.raw`<!doctype html>
               <input id="sbImageFile" type="file" accept="image/*" style="margin-top:8px">
             </div>
           </div>
-          <div class="actions">
-            <button id="sbSave" class="primary">Сохранить SaleBot</button>
-            <button id="sbOpen">Открыть SaleBot</button>
-            <button id="sbInspect">Проверить SaleBot</button>
-            <button id="sbCreateBlocks" class="danger">Создать блоки</button>
-            <button id="sbCreateDrafts" class="danger">Создать блоки и черновики</button>
-            <button id="sbSchedule" class="danger">Создать и запланировать</button>
+          <div class="action-bar">
+            <div class="action-group">
+              <button id="sbSave" class="primary">Сохранить</button>
+              <button id="sbOpen">Открыть</button>
+              <button id="sbInspect">Проверить</button>
+            </div>
+            <div class="action-group final-action">
+              <select id="sbFinalAction" class="action-select" aria-label="Финальное действие SaleBot">
+                <option value="create-blocks">Создать блоки</option>
+                <option value="create-drafts">Создать блоки и черновики</option>
+                <option value="schedule">Создать и запланировать</option>
+              </select>
+              <button id="sbRunFinal" class="final">Выполнить</button>
+            </div>
           </div>
         </section>
         <aside>
           <div class="warn">Перед созданием убедись, что Chrome запущен с remote debugging и ты залогинен в SaleBot.</div>
           <details class="setup">
-            <summary>Команды для PowerShell</summary>
+            <summary>Команды запуска браузера</summary>
             <div class="setup-body command-setup" data-start-url="https://salebot.pro/">
               <div class="hint" style="margin-top:10px">Windows PowerShell:</div>
               <code class="cmdWin"></code>
+              <div class="hint" style="margin-top:10px">macOS Terminal:</div>
+              <code class="cmdMac"></code>
             </div>
           </details>
           <label>Аудитории</label>
@@ -370,6 +417,7 @@ const page = String.raw`<!doctype html>
       document.querySelectorAll(".command-setup").forEach(box => {
         const url = box.dataset.startUrl || "https://senler.ru/";
         box.querySelector(".cmdWin").textContent = "& \"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe\" --remote-debugging-port=9222 --user-data-dir=\"$env:USERPROFILE\\Documents\\Codex\\chrome-senler\" " + url;
+        box.querySelector(".cmdMac").textContent = "open -na \"Google Chrome\" --args --remote-debugging-port=9222 --user-data-dir=\"$HOME/Documents/Codex/chrome-senler\" " + url;
       });
     }
     renderCommands();
@@ -396,7 +444,7 @@ const page = String.raw`<!doctype html>
       return text.replace(/[&<>]/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[ch]));
     }
     function renderEditor(text, formats) {
-      const flags = Array.from({ length: text.length }, () => ({ bold: false, italic: false, underline: false }));
+      const flags = Array.from({ length: text.length }, () => ({ bold: false, italic: false, underline: false, link: "" }));
       for (const fmt of formats || []) {
         const start = Math.max(0, Number(fmt.offset) || 0);
         const end = Math.min(text.length, start + (Number(fmt.length) || 0));
@@ -404,24 +452,30 @@ const page = String.raw`<!doctype html>
           if (fmt.bold) flags[i].bold = true;
           if (fmt.italic) flags[i].italic = true;
           if (fmt.underline) flags[i].underline = true;
+          if (fmt.link) flags[i].link = String(fmt.link);
         }
       }
+      const escapeAttr = value => escapeHtml(value).replace(/"/g, "&quot;");
       let html = "";
       let prev = {};
       for (let i = 0; i < text.length; i++) {
         const cur = flags[i];
-        if (prev.underline && !cur.underline) html += "</u>";
-        if (prev.italic && !cur.italic) html += "</em>";
-        if (prev.bold && !cur.bold) html += "</strong>";
-        if (!prev.bold && cur.bold) html += "<strong>";
-        if (!prev.italic && cur.italic) html += "<em>";
-        if (!prev.underline && cur.underline) html += "<u>";
+        const linkChanged = (prev.link || "") !== cur.link;
+        if (prev.underline && (!cur.underline || linkChanged)) html += "</u>";
+        if (prev.italic && (!cur.italic || linkChanged)) html += "</em>";
+        if (prev.bold && (!cur.bold || linkChanged)) html += "</strong>";
+        if (linkChanged && prev.link) html += "</a>";
+        if (linkChanged && cur.link) html += "<a href=\"" + escapeAttr(cur.link) + "\">";
+        if ((!prev.bold || linkChanged) && cur.bold) html += "<strong>";
+        if ((!prev.italic || linkChanged) && cur.italic) html += "<em>";
+        if ((!prev.underline || linkChanged) && cur.underline) html += "<u>";
         html += text[i] === "\n" ? "\n" : escapeHtml(text[i]);
         prev = cur;
       }
       if (prev.underline) html += "</u>";
       if (prev.italic) html += "</em>";
       if (prev.bold) html += "</strong>";
+      if (prev.link) html += "</a>";
       $("editor").innerHTML = html;
     }
     function collectFormats() {
@@ -430,13 +484,14 @@ const page = String.raw`<!doctype html>
       let offset = 0;
       function flagsFor(node) {
         let el = node.parentElement;
-        const flags = { bold: false, italic: false, underline: false };
+        const flags = { bold: false, italic: false, underline: false, link: "" };
         while (el && el !== root) {
           const tag = el.tagName;
           const style = getComputedStyle(el);
           if (tag === "B" || tag === "STRONG" || Number(style.fontWeight) >= 600) flags.bold = true;
           if (tag === "I" || tag === "EM" || style.fontStyle === "italic") flags.italic = true;
-          if (tag === "U" || style.textDecorationLine.includes("underline")) flags.underline = true;
+          if (tag === "U" || (tag !== "A" && style.textDecorationLine.includes("underline"))) flags.underline = true;
+          if (tag === "A" && el.getAttribute("href")) flags.link = el.getAttribute("href");
           el = el.parentElement;
         }
         return flags;
@@ -445,7 +500,7 @@ const page = String.raw`<!doctype html>
         if (node.nodeType === Node.TEXT_NODE) {
           const text = node.nodeValue || "";
           const flags = flagsFor(node);
-          if (text.length && (flags.bold || flags.italic || flags.underline)) {
+          if (text.length && (flags.bold || flags.italic || flags.underline || flags.link)) {
             formats.push({ offset, length: text.length, ...flags });
           }
           offset += text.length;
@@ -455,49 +510,131 @@ const page = String.raw`<!doctype html>
           offset += 1;
           return;
         }
+        const addsBlockBreak = node.nodeType === Node.ELEMENT_NODE && (node.tagName === "DIV" || node.tagName === "P") && node.nextSibling;
         for (const child of node.childNodes) walk(child);
+        if (addsBlockBreak) offset += 1;
       }
       walk(root);
       return formats;
     }
     function markdownEscape(text) {
       const specials = new RegExp("([_*\\[\\]()~" + String.fromCharCode(96) + ">#+\\-=|{}.!\\\\])", "g");
-      return text.replace(/\\+([.!])/g, "$1").replace(specials, "\\$1");
+      return String(text ?? "").replace(specials, "\\$1");
+    }
+    function markdownCodeEscape(text) {
+      return String(text ?? "").replace(new RegExp("([\\\\" + String.fromCharCode(96) + "])", "g"), "\\$1");
+    }
+    function markdownUrlEscape(text) {
+      return String(text ?? "").replace(/([\\)])/g, "\\$1");
+    }
+    function isSafeHref(value) {
+      return /^(https?:\/\/|mailto:)/i.test(String(value ?? "").trim());
     }
     function editorToTgMarkdown(root) {
+      const backtick = String.fromCharCode(96);
+      const fence = backtick.repeat(3);
+      function withMarks(text, marks) {
+        if (!text) return "";
+        if (marks.strike) text = "~" + text + "~";
+        if (marks.spoiler) text = "||" + text + "||";
+        if (marks.underline) text = "__" + text + "__";
+        if (marks.italic) text = "_" + text + "_";
+        if (marks.bold) text = "*" + text + "*";
+        return text;
+      }
+      function styleHasLineThrough(style) {
+        return style.textDecorationLine.includes("line-through") || style.textDecoration.includes("line-through");
+      }
+      function styleHasUnderline(style) {
+        return style.textDecorationLine.includes("underline") || style.textDecoration.includes("underline");
+      }
+      function walkChildren(node, marks) {
+        return [...node.childNodes].map(child => walk(child, marks)).join("");
+      }
       function walk(node, marks = {}) {
         if (node.nodeType === Node.TEXT_NODE) {
-          let text = markdownEscape(node.nodeValue || "");
-          if (!text) return "";
-          if (marks.underline) text = "__" + text + "__";
-          if (marks.italic) text = "_" + text + "_";
-          if (marks.bold) text = "*" + text + "*";
-          return text;
+          return withMarks(markdownEscape(node.nodeValue), marks);
         }
         if (node.nodeName === "BR") return "\n";
         const next = { ...marks };
         if (node.nodeType === Node.ELEMENT_NODE) {
           const tag = node.tagName;
           const style = getComputedStyle(node);
+          if (tag === "CODE") return backtick + markdownCodeEscape(node.textContent) + backtick;
+          if (tag === "PRE") return fence + "\n" + markdownCodeEscape(node.textContent).replace(/\n+$/, "") + "\n" + fence;
+          if (tag === "A" && node.getAttribute("href")) {
+            const href = node.getAttribute("href");
+            const label = walkChildren(node, next);
+            return isSafeHref(href) ? "[" + label + "](" + markdownUrlEscape(href.trim()) + ")" : label;
+          }
           if (tag === "B" || tag === "STRONG" || Number(style.fontWeight) >= 600) next.bold = true;
           if (tag === "I" || tag === "EM" || style.fontStyle === "italic") next.italic = true;
-          if (tag === "U" || style.textDecorationLine.includes("underline")) next.underline = true;
+          if (tag === "U" || styleHasUnderline(style)) next.underline = true;
+          if (tag === "S" || tag === "STRIKE" || tag === "DEL" || styleHasLineThrough(style)) next.strike = true;
+          if (node.classList.contains("tg-spoiler")) next.spoiler = true;
+          if (tag === "BLOCKQUOTE") {
+            const inner = walkChildren(node, next).replace(/\n+$/, "");
+            const quote = inner
+              .split("\n")
+              .map(line => line ? ">" + line : "")
+              .join("\n");
+            return quote + "\n";
+          }
           if (tag === "DIV" || tag === "P") {
-            const inner = [...node.childNodes].map(child => walk(child, next)).join("");
-            return inner + "\n";
+            return walkChildren(node, next) + "\n";
           }
         }
-        return [...node.childNodes].map(child => walk(child, next)).join("");
+        return walkChildren(node, next);
       }
       return walk(root).replace(/\n{3,}/g, "\n\n").replace(/\n$/, "");
     }
+    function unescapeMarkdownV2(text) {
+      const specials = new RegExp("\\\\([_*\\[\\]()~" + String.fromCharCode(96) + ">#+\\-=|{}.!\\\\])", "g");
+      return String(text ?? "").replace(specials, "$1");
+    }
     function tgMarkdownToHtml(text) {
-      let html = escapeHtml((text || "").replace(/\\+([.!])/g, "$1"));
-      html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-      html = html.replace(/\*([^*]+)\*/g, "<strong>$1</strong>");
-      html = html.replace(/__([^_]+)__/g, "<u>$1</u>");
-      html = html.replace(/_([^_]+)_/g, "<em>$1</em>");
-      return html.replace(/\n/g, "<br>");
+      const backtick = String.fromCharCode(96);
+      const fence = backtick.repeat(3);
+      const tokenHtml = [];
+      const escapeAttr = value => escapeHtml(String(value ?? "")).replace(/"/g, "&quot;");
+      const stashHtml = html => {
+        const token = "\u0000TGHTML" + tokenHtml.length + "\u0000";
+        tokenHtml.push(html);
+        return token;
+      };
+      const restoreHtml = html => html.replace(/\u0000TGHTML(\d+)\u0000/g, (_, index) => tokenHtml[Number(index)] || "");
+
+      let markdown = String(text ?? "").replace(new RegExp(fence + "([\\s\\S]*?)" + fence, "g"), (_, code) => {
+        return stashHtml("<pre>" + escapeHtml(unescapeMarkdownV2(code).replace(/^\n|\n$/g, "")) + "</pre>");
+      });
+      markdown = markdown.replace(new RegExp(backtick + "((?:\\\\.|[^" + backtick + "\\n])*)" + backtick, "g"), (_, code) => {
+        return stashHtml("<code>" + escapeHtml(unescapeMarkdownV2(code)) + "</code>");
+      });
+      markdown = markdown.replace(/\[((?:\\.|[^\]\\\n])*)\]\(((?:\\.|[^)\\\n])*)\)/g, (_, label, url) => {
+        const linkLabel = unescapeMarkdownV2(label);
+        const linkUrl = unescapeMarkdownV2(url).trim();
+        if (!isSafeHref(linkUrl)) {
+          return stashHtml(escapeHtml("[" + linkLabel + "](" + linkUrl + ")"));
+        }
+        return stashHtml("<a href=\"" + escapeAttr(linkUrl) + "\">" + escapeHtml(linkLabel) + "</a>");
+      });
+      const escapedSpecials = new RegExp("\\\\([_*\\[\\]()~" + backtick + ">#+\\-=|{}.!\\\\])", "g");
+      markdown = markdown.replace(escapedSpecials, (_, value) => {
+        return stashHtml(escapeHtml(value));
+      });
+
+      let html = escapeHtml(markdown);
+      html = html.replace(/(^|\n)((?:&gt; ?[^\n]*(?:\n|$))+)/g, (_, lead, body) => {
+        const trailing = body.endsWith("\n") ? "\n" : "";
+        const quote = body.replace(/\n$/, "").split("\n").map(line => line.replace(/^&gt; ?/, "")).join("\n");
+        return lead + "<blockquote>" + quote + "</blockquote>" + trailing;
+      });
+      html = html.replace(/\|\|([^|\n]+)\|\|/g, "<span class=\"tg-spoiler\">$1</span>");
+      html = html.replace(/~([^~\n]+)~/g, "<s>$1</s>");
+      html = html.replace(/__([^_\n]+)__/g, "<u>$1</u>");
+      html = html.replace(/\*([^*\n]+)\*/g, "<strong>$1</strong>");
+      html = html.replace(/_([^_\n]+)_/g, "<em>$1</em>");
+      return restoreHtml(html.replace(/\n/g, "<br>"));
     }
     function formData() {
       return {
@@ -597,17 +734,15 @@ const page = String.raw`<!doctype html>
     $("sbSave").onclick = () => saveSalebot().catch(e => log(e.message));
     $("sbOpen").onclick = () => salebotCommand("open").catch(e => log(e.message));
     $("sbInspect").onclick = () => salebotCommand("inspect").catch(e => log(e.message));
-    $("sbCreateBlocks").onclick = async () => {
-      if (!confirm("Создать комментарий и текстовый блок в SaleBot?")) return;
-      salebotCommand("create-blocks").catch(e => log(e.message));
-    };
-    $("sbCreateDrafts").onclick = async () => {
-      if (!confirm("Создать блоки и черновики рассылок в SaleBot?")) return;
-      salebotCommand("create-drafts").catch(e => log(e.message));
-    };
-    $("sbSchedule").onclick = async () => {
-      if (!confirm("Создать блоки и запланировать рассылки в SaleBot?")) return;
-      salebotCommand("schedule").catch(e => log(e.message));
+    $("sbRunFinal").onclick = async () => {
+      const command = $("sbFinalAction").value;
+      const confirmText = {
+        "create-blocks": "Создать комментарий и текстовый блок в SaleBot?",
+        "create-drafts": "Создать блоки и черновики рассылок в SaleBot?",
+        "schedule": "Создать блоки и запланировать рассылки в SaleBot?"
+      }[command] || "Выполнить выбранное действие в SaleBot?";
+      if (!confirm(confirmText)) return;
+      salebotCommand(command).catch(e => log(e.message));
     };
     async function saveAudiences() {
       return api("/api/salebot-audiences", { audiences: salebotAudiences });
@@ -757,19 +892,180 @@ const page = String.raw`<!doctype html>
       selectedSaleBotAudiencesFromCampaign = campaign.selectedAudienceIds || [];
       renderSaleBotAudiences(selectedSaleBotAudiencesFromCampaign);
     }).catch(e => log(e.message));
+    function currentSelectionText() {
+      const selection = window.getSelection();
+      return selection ? selection.toString() : "";
+    }
+    function focusEditorById(id) {
+      const editor = $(id);
+      if (editor) editor.focus();
+      return editor;
+    }
+    const savedEditorRanges = {};
+    function rangeBelongsToEditor(range, editor) {
+      if (!range || !editor) return false;
+      const container = range.commonAncestorContainer.nodeType === Node.ELEMENT_NODE
+        ? range.commonAncestorContainer
+        : range.commonAncestorContainer.parentElement;
+      return editor.contains(container) || editor === container;
+    }
+    function rememberEditorSelection(editorId) {
+      const editor = $(editorId);
+      const selection = window.getSelection();
+      if (!editor || !selection || !selection.rangeCount) return;
+      const range = selection.getRangeAt(0);
+      if (rangeBelongsToEditor(range, editor)) savedEditorRanges[editorId] = range.cloneRange();
+    }
+    function restoreEditorSelection(editorId) {
+      const editor = $(editorId);
+      const range = savedEditorRanges[editorId];
+      if (!editor || !range || !rangeBelongsToEditor(range, editor)) return null;
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range.cloneRange());
+      return selection.getRangeAt(0);
+    }
+    function selectedRangeInEditor(editor) {
+      const selection = window.getSelection();
+      if (!editor) return null;
+      if (selection && selection.rangeCount) {
+        const range = selection.getRangeAt(0);
+        if (rangeBelongsToEditor(range, editor)) {
+          savedEditorRanges[editor.id] = range.cloneRange();
+          return range;
+        }
+      }
+      return restoreEditorSelection(editor.id);
+    }
+    function notifyEditorInput(editor) {
+      if (editor) editor.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+    function applyInlineWrapper(editorId, tagName, className = "") {
+      const editor = focusEditorById(editorId);
+      const range = selectedRangeInEditor(editor);
+      if (!range) return;
+      const node = document.createElement(tagName);
+      if (className) node.className = className;
+      if (range.collapsed) {
+        node.textContent = currentSelectionText() || tagName.toLowerCase();
+      } else {
+        node.appendChild(range.extractContents());
+      }
+      range.deleteContents();
+      range.insertNode(node);
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      const nextRange = document.createRange();
+      nextRange.selectNodeContents(node);
+      nextRange.collapse(false);
+      selection.addRange(nextRange);
+      editor.focus();
+      savedEditorRanges[editorId] = nextRange.cloneRange();
+      notifyEditorInput(editor);
+    }
+    function applyBlockWrapper(editorId, tagName) {
+      const editor = focusEditorById(editorId);
+      const range = selectedRangeInEditor(editor);
+      if (!range) return;
+      const node = document.createElement(tagName);
+      if (range.collapsed) {
+        node.appendChild(document.createElement("br"));
+      } else {
+        node.appendChild(range.extractContents());
+      }
+      range.deleteContents();
+      range.insertNode(node);
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      const nextRange = document.createRange();
+      nextRange.selectNodeContents(node);
+      nextRange.collapse(false);
+      selection.addRange(nextRange);
+      editor.focus();
+      savedEditorRanges[editorId] = nextRange.cloneRange();
+      notifyEditorInput(editor);
+    }
+    function applyLink(editorId) {
+      const editor = focusEditorById(editorId);
+      const range = selectedRangeInEditor(editor);
+      if (!range) return;
+      const url = prompt("Ссылка");
+      if (!url) return;
+      const link = document.createElement("a");
+      link.href = url.trim();
+      link.target = "_blank";
+      link.rel = "noreferrer";
+      if (range.collapsed) {
+        link.textContent = currentSelectionText() || url.trim();
+      } else {
+        link.appendChild(range.extractContents());
+      }
+      range.deleteContents();
+      range.insertNode(link);
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      const nextRange = document.createRange();
+      nextRange.selectNodeContents(link);
+      nextRange.collapse(false);
+      selection.addRange(nextRange);
+      editor.focus();
+      savedEditorRanges[editorId] = nextRange.cloneRange();
+      notifyEditorInput(editor);
+    }
+    function insertTextAtCaret(editorId, text) {
+      const editor = focusEditorById(editorId);
+      const selection = window.getSelection();
+      let range = selectedRangeInEditor(editor);
+      if (!range) {
+        range = document.createRange();
+        range.selectNodeContents(editor);
+        range.collapse(false);
+      }
+      range.deleteContents();
+      const node = document.createTextNode(text);
+      range.insertNode(node);
+      range.setStartAfter(node);
+      range.collapse(true);
+      selection.removeAllRanges();
+      selection.addRange(range);
+      editor.focus();
+      savedEditorRanges[editorId] = range.cloneRange();
+      notifyEditorInput(editor);
+    }
+    ["editor", "sbEditor"].forEach(editorId => {
+      const editor = $(editorId);
+      editor.addEventListener("keyup", () => rememberEditorSelection(editorId));
+      editor.addEventListener("mouseup", () => rememberEditorSelection(editorId));
+      editor.addEventListener("input", () => rememberEditorSelection(editorId));
+    });
+    document.addEventListener("selectionchange", () => {
+      rememberEditorSelection("editor");
+      rememberEditorSelection("sbEditor");
+    });
     document.querySelectorAll(".toolbar button").forEach(btn => {
+      btn.onmousedown = (event) => event.preventDefault();
       btn.onclick = () => {
-        const target = btn.dataset.sbCmd ? $("sbEditor") : $("editor");
-        target.focus();
-        document.execCommand(btn.dataset.sbCmd || btn.dataset.cmd, false, null);
+        const editorId = btn.dataset.editor || "editor";
+        focusEditorById(editorId);
+        if (btn.hasAttribute("data-format-link")) return applyLink(editorId);
+        if (btn.hasAttribute("data-inline-code")) return applyInlineWrapper(editorId, "code");
+        if (btn.hasAttribute("data-code-block")) return applyBlockWrapper(editorId, "pre");
+        if (btn.hasAttribute("data-spoiler")) return applyInlineWrapper(editorId, "span", "tg-spoiler");
+        if (btn.hasAttribute("data-quote")) return applyBlockWrapper(editorId, "blockquote");
+        if (btn.dataset.cmd) document.execCommand(btn.dataset.cmd, false, null);
       };
     });
-    document.querySelectorAll("[data-sb-cmd]").forEach(btn => {
-      btn.onclick = () => {
-        $("sbEditor").focus();
-        document.execCommand(btn.dataset.sbCmd, false, null);
-      };
-    });
+    $("senlerVariable").onchange = () => {
+      let value = $("senlerVariable").value;
+      $("senlerVariable").value = "";
+      if (!value) return;
+      if (value === "__custom_user__" || value === "__custom_global__") {
+        const name = String(prompt("Имя переменной") || "").trim().toLowerCase().replace(/[^a-z0-9_]/g, "");
+        if (!name) return;
+        value = value === "__custom_user__" ? "{%" + name + "%}" : "[%" + name + "%]";
+      }
+      insertTextAtCaret("editor", value);
+    };
   </script>
 </body>
 </html>`;

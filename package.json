@@ -7,7 +7,8 @@
     "senler": "node scripts/senler-tool.mjs",
     "salebot": "node scripts/salebot-tool.mjs",
     "senler-ui": "node scripts/senler-ui.mjs",
-    "senler-ui:dev": "node --watch scripts/senler-ui.mjs"
+    "senler-ui:dev": "node --watch scripts/senler-ui.mjs",
+    "test": "node --test scripts/lib/*.test.mjs"
   },
   "dependencies": {
     "ws": "^8.20.0"
