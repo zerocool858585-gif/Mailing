@@ -110,7 +110,7 @@ async function openWaiting(cdp, groupId) {
     cdp,
     `(() => {
       const tab = [...document.querySelectorAll("a,button,div")]
-        .find(el => /^РћР¶РёРґР°РЅРёРµ/.test((el.innerText || "").trim()) && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+        .find(el => /^Ожидание/.test((el.innerText || "").trim()) && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length));
       if (tab) tab.click();
       return true;
     })()`
@@ -140,7 +140,7 @@ async function filterWaitingByDate(cdp, campaign) {
       set("date_from", ${JSON.stringify(day)});
       set("date_to", ${JSON.stringify(day)});
       const show = [...document.querySelectorAll("#collapseSearch a,#collapseSearch button,#collapseSearch div,.submit")]
-        .find(el => (el.innerText || "").trim() === "РџРѕРєР°Р·Р°С‚СЊ");
+        .find(el => (el.innerText || "").trim() === "Показать");
       if (show) show.click();
       return true;
     })()`
@@ -157,7 +157,7 @@ async function clickShowMoreUntilFound(cdp, campaign, maxClicks = 8) {
       `(() => {
         window.scrollTo(0, document.body.scrollHeight);
         const more = [...document.querySelectorAll("a,button,div")]
-          .find(el => (el.innerText || "").trim() === "РџРѕРєР°Р·Р°С‚СЊ РµС‰Рµ" && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+          .find(el => (el.innerText || "").trim() === "Показать еще" && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length));
         if (more) more.click();
         return !!more;
       })()`
@@ -192,7 +192,7 @@ async function openCard(cdp, campaign) {
       const card = [...document.querySelectorAll(".deliv-item,.collapse-card-info,.card,.d-flex.justify-content-between,.list-infinite-delivs > *")]
         .find(el => (el.innerText || "").includes(title));
       const more = card ? [...card.querySelectorAll("a,button,div")]
-        .find(el => (el.innerText || "").trim() === "РџРѕРєР°Р·Р°С‚СЊ РµС‰Рµ" && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length)) : null;
+        .find(el => (el.innerText || "").trim() === "Показать еще" && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length)) : null;
       if (more) more.click();
       return !!more;
     })()`
@@ -209,25 +209,34 @@ async function validateGroup(cdp, groupId, campaign) {
   const details = await evalJson(
     cdp,
     `(() => {
+      const campaign = ${JSON.stringify(campaign)};
       const txt = document.body.innerText;
       const html = document.body.innerHTML;
-      const title = ${JSON.stringify(campaign.name)};
+      const title = campaign.name;
       const idx = txt.indexOf(title);
       const frag = idx >= 0 ? txt.slice(idx, idx + 4000) : txt.slice(0, 1800);
+      const normalize = (value) => String(value || "").replace(/\\s+/g, " ").trim();
+      const normalizedFrag = normalize(frag);
+      const expectedParts = String(campaign.message || "")
+        .split(/\\r?\\n/)
+        .map(part => normalize(part))
+        .filter(part => part.length >= 6)
+        .slice(0, 4);
+      const expectsFormatting = !!((campaign.formats || []).length || (campaign.boldPhrases || []).length);
       return {
         found: idx >= 0,
-        active: frag.includes("РђРєС‚РёРІРёСЂРѕРІР°РЅРѕ:"),
-        sendDate: txt.includes(${JSON.stringify(campaign.sendDate)}),
-        textOk: txt.includes("РЎРјРѕС‚СЂРµС‚СЊ С‚РѕР»СЊРєРѕ С‚РµРј, РєС‚Рѕ РїРµСЂРµС…РѕРґРёС‚ РІ 11 РєР»Р°СЃСЃ") && txt.includes("Р§С‚Рѕ Р±СѓРґРµС‚ РІРЅСѓС‚СЂРё:") && txt.includes("РЎРµС‡С‘С€СЊ?"),
-        boldOk: html.includes("<strong>РЎРјРѕС‚СЂРµС‚СЊ С‚РѕР»СЊРєРѕ С‚РµРј, РєС‚Рѕ РїРµСЂРµС…РѕРґРёС‚ РІ 11 РєР»Р°СЃСЃ!</strong>") || html.includes("<strong>Р§С‚Рѕ Р±СѓРґРµС‚ РІРЅСѓС‚СЂРё:</strong>"),
-        noFilterWarning: txt.includes("РќРµ РёСЃРїРѕР»СЊР·СѓСЋС‚СЃСЏ С„РёР»СЊС‚СЂС‹"),
-        recipients: (frag.match(/РџРѕР»СѓС‡Р°С‚РµР»Рё:\\s*\\d+/) || [""])[0],
+        active: frag.includes("Активировано:"),
+        sendDate: txt.includes(campaign.sendDate),
+        textOk: expectedParts.length ? expectedParts.every(part => normalizedFrag.includes(part)) : true,
+        formattedOk: expectsFormatting ? /<(strong|em|u|a)\\b/.test(html) : true,
+        noFilterWarning: txt.includes("Не используются фильтры"),
+        recipients: (frag.match(/Получатели:\\s*\\d+/) || [""])[0],
         fragment: frag.slice(0, 700)
       };
     })()`
   );
   return {
-    ok: opened.found && details.found && details.active && details.sendDate && details.textOk && details.boldOk && !details.noFilterWarning,
+    ok: opened.found && details.found && details.active && details.sendDate && details.textOk && details.formattedOk && !details.noFilterWarning,
     clickedMore,
     opened,
     details,
@@ -287,8 +296,11 @@ async function fillEditor(cdp, campaign) {
       };
       hidden("message", campaign.message);
       hidden("format_data", editor ? editor.innerHTML : campaign.message);
-      hidden("quill_delta", quill ? JSON.stringify({ ops: quill.getContents().ops }) : "");
+      const deltaOps = quill ? quill.getContents().ops : [];
+      hidden("quill_delta", quill ? JSON.stringify({ ops: deltaOps }) : "");
       const text = quill ? quill.getText() : (editor?.innerText || "");
+      const hasFormattedDelta = deltaOps.some(op => op.attributes && Object.keys(op.attributes).length);
+      const html = editor?.innerHTML || "";
       return {
         title: document.querySelector('input[name="name"]')?.value || "",
         sendDate: document.querySelector('input[name="send_date"]')?.value || "",
@@ -296,8 +308,8 @@ async function fillEditor(cdp, campaign) {
         hiddenMessageLength: document.querySelector('input[name="message"]')?.value?.length || 0,
         editorCount: document.querySelectorAll(".ql-editor").length,
         hasQuill: !!window.Quill,
-        bold: (editor?.innerHTML || "").includes("<strong>"),
-        formatted: /<(strong|em|u|a)\b/.test(editor?.innerHTML || "")
+        bold: html.includes("<strong>") || deltaOps.some(op => op.attributes?.bold),
+        formatted: hasFormattedDelta || /<(strong|b|em|i|u|a)\b|font-weight:\\s*(bold|[6-9]00)|text-decoration[^;]*underline/i.test(html)
       };
     })()`
   );
@@ -311,7 +323,7 @@ async function addDateFilter(cdp, campaign) {
     cdp,
     `(() => {
       const btn = [...document.querySelectorAll(".SubscriberFilter .btn,.SubscriberFilter,a,button,div")]
-        .find(el => (el.innerText || "").trim() === "Р”РѕР±Р°РІРёС‚СЊ С„РёР»СЊС‚СЂ" && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+        .find(el => (el.innerText || "").trim() === "Добавить фильтр" && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length));
       if (btn) btn.click();
       return !!btn;
     })()`
@@ -321,7 +333,7 @@ async function addDateFilter(cdp, campaign) {
     cdp,
     `(() => {
       const items = [...document.querySelectorAll(".SubscriberFilter .dropdown-item,.dropdown-menu .dropdown-item,a,div")]
-        .filter(el => (el.innerText || "").trim() === "Р”Р°С‚Р° РїРѕРґРїРёСЃРєРё");
+        .filter(el => (el.innerText || "").trim() === "Дата подписки");
       const item = items.find(el => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length) && !String(el.className || "").includes("disabled"))
         || items.find(el => !String(el.className || "").includes("disabled"))
         || items[0];
@@ -356,15 +368,85 @@ async function attachImage(cdp, campaign) {
   const doc = await cdp("DOM.getDocument", {});
   const all = await cdp("DOM.querySelectorAll", { nodeId: doc.root.nodeId, selector: "input[type=file]" });
   let imageNode = null;
-  for (const nodeId of all.nodeIds || []) {
+  let imageIndex = -1;
+  let imageInput = null;
+  const nodeIds = all.nodeIds || [];
+  for (let index = 0; index < nodeIds.length; index += 1) {
+    const nodeId = nodeIds[index];
     const attrs = await cdp("DOM.getAttributes", { nodeId });
     const pairs = attrs.attributes || [];
     const map = Object.fromEntries(Array.from({ length: Math.floor(pairs.length / 2) }, (_, i) => [pairs[i * 2], pairs[i * 2 + 1]]));
-    if ((map.accept || "").includes("image")) imageNode = nodeId;
+    if ((map.accept || "").includes("image")) {
+      imageNode = nodeId;
+      imageIndex = index;
+      imageInput = {
+        index,
+        accept: map.accept || "",
+        id: map.id || "",
+        name: map.name || "",
+        className: map.class || ""
+      };
+    }
   }
-  if (!imageNode) throw new Error("Image file input not found");
+  if (!imageNode) {
+    const inputs = await evalJson(
+      cdp,
+      `(() => [...document.querySelectorAll("input[type=file]")].map((el, index) => ({
+        index,
+        accept: el.accept || "",
+        id: el.id || "",
+        name: el.name || "",
+        className: String(el.className || "")
+      })))()`
+    );
+    throw new Error(`Image file input not found: ${JSON.stringify(inputs)}`);
+  }
   await cdp("DOM.setFileInputFiles", { nodeId: imageNode, files: [campaign.imagePath] });
-  await waitFor(cdp, `document.querySelectorAll(".message_attachments .attachment_item").length > ${before}`, 45000);
+  const dispatch = await evalJson(
+    cdp,
+    `(() => {
+      const input = [...document.querySelectorAll("input[type=file]")][${imageIndex}];
+      if (!input) return { dispatched: false, reason: "input_not_found" };
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+      return {
+        dispatched: true,
+        files: input.files?.length || 0,
+        accept: input.accept || "",
+        id: input.id || "",
+        name: input.name || "",
+        className: String(input.className || "")
+      };
+    })()`
+  );
+  try {
+    await waitFor(cdp, `document.querySelectorAll(".message_attachments .attachment_item").length > ${before}`, 90000);
+  } catch (error) {
+    const diagnostics = await evalJson(
+      cdp,
+      `(() => ({
+        url: location.href,
+        readyState: document.readyState,
+        before: ${before},
+        after: document.querySelectorAll(".message_attachments .attachment_item").length,
+        fileInputs: [...document.querySelectorAll("input[type=file]")].map((el, index) => ({
+          index,
+          accept: el.accept || "",
+          id: el.id || "",
+          name: el.name || "",
+          className: String(el.className || ""),
+          files: el.files?.length || 0,
+          visible: !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length)
+        })),
+        attachmentsHtml: (document.querySelector(".message_attachments")?.innerHTML || "").slice(0, 1000),
+        uploadText: [...document.querySelectorAll(".message_attachments,.attachment_item,.file_upload,.progress,.alert,.toast,.error,.help-block")]
+          .map(el => (el.innerText || el.textContent || "").trim().replace(/\\s+/g, " "))
+          .filter(Boolean)
+          .slice(0, 20)
+      }))()`
+    );
+    throw new Error(`Image attach failed: ${error.message}; ${JSON.stringify({ imageInput, dispatch, diagnostics })}`);
+  }
   const after = await evalJson(cdp, `document.querySelectorAll(".message_attachments .attachment_item").length`);
   return { imageInput: true, before, after, attached: after > before };
 }
@@ -374,7 +456,7 @@ async function activateFromModal(cdp) {
     cdp,
     `(() => {
       const modal = [...document.querySelectorAll(".modal.show,.modal")]
-        .find(m => (m.innerText || "").includes("Р Р°СЃСЃС‹Р»РєР° СЃРѕС…СЂР°РЅРµРЅР°"));
+        .find(m => (m.innerText || "").includes("Рассылка сохранена"));
       const btn = modal?.querySelector(".btn.btn-success.submit");
       if (btn) btn.click();
       return { modal: !!modal, clicked: !!btn, text: modal?.innerText.trim().replace(/\\s+/g, " ").slice(0, 300) || "" };
@@ -384,23 +466,23 @@ async function activateFromModal(cdp) {
 
 async function createGroup(cdp, groupId, campaign, shouldActivate) {
   await evalJson(cdp, `location.href = "https://senler.ru/cabinet/delivs/${groupId}"; true`);
-  await waitFor(cdp, `document.readyState === "complete" && document.body.innerText.includes("РќРѕРІР°СЏ СЂР°СЃСЃС‹Р»РєР°")`, 25000);
+  await waitFor(cdp, `document.readyState === "complete" && document.body.innerText.includes("Новая рассылка")`, 25000);
   await evalJson(
     cdp,
     `(() => {
-      const el = [...document.querySelectorAll("a,button")].find(x => (x.innerText || "").includes("РќРѕРІР°СЏ СЂР°СЃСЃС‹Р»РєР°"));
+      const el = [...document.querySelectorAll("a,button")].find(x => (x.innerText || "").includes("Новая рассылка"));
       if (el) el.click();
       return !!el;
     })()`
   );
-  await waitFor(cdp, `document.body.innerText.includes("РЎРѕР·РґР°РЅРёРµ СЂР°СЃСЃС‹Р»РєРё") && document.body.innerText.includes("Р Р°Р·РѕРІР°СЏ СЂР°СЃСЃС‹Р»РєР°")`, 12000);
+  await waitFor(cdp, `document.body.innerText.includes("Создание рассылки") && document.body.innerText.includes("Разовая рассылка")`, 12000);
   await evalJson(
     cdp,
     `(() => {
       const modal = document.querySelector(".modal.show");
-      const label = [...modal.querySelectorAll("label")].find(l => l.innerText.includes("Р Р°Р·РѕРІР°СЏ СЂР°СЃСЃС‹Р»РєР°"));
+      const label = [...modal.querySelectorAll("label")].find(l => l.innerText.includes("Разовая рассылка"));
       if (label) label.click();
-      const btn = [...modal.querySelectorAll("button,.btn,a,div")].find(el => (el.innerText || "").trim() === "РџСЂРѕРґРѕР»Р¶РёС‚СЊ");
+      const btn = [...modal.querySelectorAll("button,.btn,a,div")].find(el => (el.innerText || "").trim() === "Продолжить");
       if (btn) btn.click();
       return { label: !!label, btn: !!btn };
     })()`
@@ -414,7 +496,7 @@ async function createGroup(cdp, groupId, campaign, shouldActivate) {
     cdp,
     `(() => {
       const btn = [...document.querySelectorAll("a,button,input,div")]
-        .find(el => (el.innerText || el.value || "").trim() === "РЎРѕС…СЂР°РЅРёС‚СЊ" && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+        .find(el => (el.innerText || el.value || "").trim() === "Сохранить" && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length));
       if (btn) btn.click();
       return !!btn;
     })()`

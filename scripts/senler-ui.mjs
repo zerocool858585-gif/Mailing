@@ -156,7 +156,8 @@ const page = String.raw`<!doctype html>
     details.setup summary { cursor: pointer; padding: 10px; font-size: 13px; font-weight: 700; color: #1f2933; }
     details.setup .setup-body { border-top: 1px solid #d8dee6; padding: 10px; }
     details.setup code { display: block; margin-top: 8px; padding: 10px; border-radius: 6px; background: #111827; color: #d1fae5; font-size: 12px; white-space: pre-wrap; word-break: break-word; }
-    .log-actions { display: flex; gap: 8px; margin-top: 10px; }
+    .copy-command { margin-top: 8px; }
+    .log-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
     @media (max-width: 900px) { .grid, .row { grid-template-columns: 1fr; } main { padding: 14px; } .action-bar { display: grid; } .final-action { margin-left: 0; padding-left: 0; border-left: 0; } select.action-select { width: 100%; } }
   </style>
 </head>
@@ -232,8 +233,10 @@ const page = String.raw`<!doctype html>
           <div class="setup-body command-setup" data-start-url="https://senler.ru/">
             <div class="hint" style="margin-top:10px">Windows PowerShell:</div>
             <code class="cmdWin"></code>
+            <button type="button" class="copy-command" data-copy-command="win">Скопировать Windows</button>
             <div class="hint" style="margin-top:10px">macOS Terminal:</div>
             <code class="cmdMac"></code>
+            <button type="button" class="copy-command" data-copy-command="mac">Скопировать macOS</button>
           </div>
         </details>
         <label>Группы</label>
@@ -245,6 +248,7 @@ const page = String.raw`<!doctype html>
         <p class="hint">Кнопка создания требует отдельного подтверждения. Проверка и открытие вкладок ничего не отправляют.</p>
         <div class="log-actions">
           <button id="showLog">Показать лог</button>
+          <button id="copyLog">Скопировать лог</button>
           <button id="clearLog">Очистить лог</button>
         </div>
         <pre id="log">Готово.</pre>
@@ -318,8 +322,10 @@ const page = String.raw`<!doctype html>
             <div class="setup-body command-setup" data-start-url="https://salebot.pro/">
               <div class="hint" style="margin-top:10px">Windows PowerShell:</div>
               <code class="cmdWin"></code>
+              <button type="button" class="copy-command" data-copy-command="win">Скопировать Windows</button>
               <div class="hint" style="margin-top:10px">macOS Terminal:</div>
               <code class="cmdMac"></code>
+              <button type="button" class="copy-command" data-copy-command="mac">Скопировать macOS</button>
             </div>
           </details>
           <label>Аудитории</label>
@@ -327,6 +333,7 @@ const page = String.raw`<!doctype html>
           <p class="hint">Для каждой выбранной аудитории SaleBot создаст свой блок и свою рассылку. Кнопка всегда будет в тексте.</p>
           <div class="log-actions">
             <button id="sbShowLog">Показать лог</button>
+            <button id="sbCopyLog">Скопировать лог</button>
             <button id="sbClearLog">Очистить лог</button>
           </div>
           <pre id="sbLog">Готово.</pre>
@@ -404,12 +411,15 @@ const page = String.raw`<!doctype html>
     const saleBotProjectId = ${JSON.stringify(SALEBOT_PROJECT_ID)};
     const saleBotSheetId = ${JSON.stringify(SALEBOT_SHEET_ID)};
     function toDateTimeLocal(value) {
-      const match = String(value || "").match(/^(\\d{2})\\.(\\d{2})\\.(\\d{4})\\s+(\\d{2}):(\\d{2})/);
-      if (!match) return "";
+      const match = String(value || "").match(/^(\d{2})\.(\d{2})\.(\d{4})\s+(\d{2}):(\d{2})/);
+      if (!match) {
+        const iso = String(value || "").match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/);
+        return iso ? iso[1] + "-" + iso[2] + "-" + iso[3] + "T" + iso[4] + ":" + iso[5] : "";
+      }
       return match[3] + "-" + match[2] + "-" + match[1] + "T" + match[4] + ":" + match[5];
     }
     function fromDateTimeLocal(value) {
-      const match = String(value || "").match(/^(\\d{4})-(\\d{2})-(\\d{2})T(\\d{2}):(\\d{2})/);
+      const match = String(value || "").match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/);
       if (!match) return value || "";
       return match[3] + "." + match[2] + "." + match[1] + " " + match[4] + ":" + match[5];
     }
@@ -419,6 +429,49 @@ const page = String.raw`<!doctype html>
         box.querySelector(".cmdWin").textContent = "& \"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe\" --remote-debugging-port=9222 --user-data-dir=\"$env:USERPROFILE\\Documents\\Codex\\chrome-senler\" " + url;
         box.querySelector(".cmdMac").textContent = "open -na \"Google Chrome\" --args --remote-debugging-port=9222 --user-data-dir=\"$HOME/Documents/Codex/chrome-senler\" " + url;
       });
+    }
+    async function copyText(text, button) {
+      const value = String(text || "");
+      if (!value.trim()) return;
+      let copied = false;
+      if (navigator.clipboard?.writeText) {
+        try {
+          await navigator.clipboard.writeText(value);
+          copied = true;
+        } catch {
+          copied = fallbackCopyText(value);
+        }
+      } else {
+        copied = fallbackCopyText(value);
+      }
+      flashButton(button, copied ? "Скопировано" : "Не скопировано");
+    }
+    function fallbackCopyText(text) {
+      try {
+        const area = document.createElement("textarea");
+        area.value = text;
+        area.setAttribute("readonly", "");
+        area.style.position = "fixed";
+        area.style.top = "0";
+        area.style.left = "-9999px";
+        document.body.append(area);
+        area.select();
+        const copied = document.execCommand("copy");
+        area.remove();
+        return copied;
+      } catch {
+        return false;
+      }
+    }
+    function flashButton(button, text) {
+      if (!button) return;
+      const previous = button.textContent;
+      button.textContent = text;
+      button.disabled = true;
+      setTimeout(() => {
+        button.textContent = previous;
+        button.disabled = false;
+      }, 1200);
     }
     renderCommands();
     function connectLiveReload() {
@@ -817,6 +870,15 @@ const page = String.raw`<!doctype html>
       const json = await api("/api/log");
       log(json.log || "Лог пуст.");
     };
+    $("copyLog").onclick = (event) => copyText($("log").textContent, event.currentTarget);
+    $("sbCopyLog").onclick = (event) => copyText($("sbLog").textContent, event.currentTarget);
+    document.querySelectorAll("[data-copy-command]").forEach(button => {
+      button.onclick = (event) => {
+        const box = event.currentTarget.closest(".command-setup");
+        const selector = event.currentTarget.dataset.copyCommand === "mac" ? ".cmdMac" : ".cmdWin";
+        copyText(box?.querySelector(selector)?.textContent || "", event.currentTarget);
+      };
+    });
     $("clearLog").onclick = async () => {
       await api("/api/log/clear", {});
       log("Лог очищен.");
@@ -901,6 +963,44 @@ const page = String.raw`<!doctype html>
       if (editor) editor.focus();
       return editor;
     }
+    function askText(title, initialValue = "") {
+      return new Promise(resolve => {
+        const overlay = document.createElement("div");
+        overlay.style.cssText = "position:fixed;inset:0;z-index:9999;background:rgba(15,23,42,.35);display:grid;place-items:center;padding:16px";
+        const box = document.createElement("div");
+        box.style.cssText = "width:min(460px,100%);background:#fff;border:1px solid #c7d0dc;border-radius:8px;padding:14px;box-shadow:0 18px 50px rgba(15,23,42,.22)";
+        const label = document.createElement("label");
+        label.textContent = title;
+        label.style.margin = "0 0 8px";
+        const input = document.createElement("input");
+        input.value = initialValue;
+        const actions = document.createElement("div");
+        actions.style.cssText = "display:flex;justify-content:flex-end;gap:8px;margin-top:12px";
+        const cancel = document.createElement("button");
+        cancel.type = "button";
+        cancel.textContent = "Отмена";
+        const ok = document.createElement("button");
+        ok.type = "button";
+        ok.className = "primary";
+        ok.textContent = "OK";
+        const close = value => {
+          overlay.remove();
+          resolve(value);
+        };
+        cancel.onclick = () => close("");
+        ok.onclick = () => close(input.value);
+        input.onkeydown = event => {
+          if (event.key === "Enter") close(input.value);
+          if (event.key === "Escape") close("");
+        };
+        actions.append(cancel, ok);
+        box.append(label, input, actions);
+        overlay.append(box);
+        document.body.append(overlay);
+        input.focus();
+        input.select();
+      });
+    }
     const savedEditorRanges = {};
     function rangeBelongsToEditor(range, editor) {
       if (!range || !editor) return false;
@@ -940,9 +1040,20 @@ const page = String.raw`<!doctype html>
     function notifyEditorInput(editor) {
       if (editor) editor.dispatchEvent(new Event("input", { bubbles: true }));
     }
-    function applyInlineWrapper(editorId, tagName, className = "") {
-      const editor = focusEditorById(editorId);
+    function activateEditorSelection(editorId) {
+      const editor = $(editorId);
       const range = selectedRangeInEditor(editor);
+      if (!editor) return { editor: null, range: null };
+      editor.focus();
+      if (range) {
+        const selection = window.getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+      }
+      return { editor, range };
+    }
+    function applyInlineWrapper(editorId, tagName, className = "") {
+      const { editor, range } = activateEditorSelection(editorId);
       if (!range) return;
       const node = document.createElement(tagName);
       if (className) node.className = className;
@@ -964,8 +1075,7 @@ const page = String.raw`<!doctype html>
       notifyEditorInput(editor);
     }
     function applyBlockWrapper(editorId, tagName) {
-      const editor = focusEditorById(editorId);
-      const range = selectedRangeInEditor(editor);
+      const { editor, range } = activateEditorSelection(editorId);
       if (!range) return;
       const node = document.createElement(tagName);
       if (range.collapsed) {
@@ -985,18 +1095,18 @@ const page = String.raw`<!doctype html>
       savedEditorRanges[editorId] = nextRange.cloneRange();
       notifyEditorInput(editor);
     }
-    function applyLink(editorId) {
-      const editor = focusEditorById(editorId);
-      const range = selectedRangeInEditor(editor);
+    async function applyLink(editorId) {
+      const { editor, range } = activateEditorSelection(editorId);
       if (!range) return;
-      const url = prompt("Ссылка");
+      const selected = range.toString();
+      const url = await askText("Ссылка", selected && /^https?:\/\//i.test(selected) ? selected : "https://");
       if (!url) return;
       const link = document.createElement("a");
       link.href = url.trim();
       link.target = "_blank";
       link.rel = "noreferrer";
       if (range.collapsed) {
-        link.textContent = currentSelectionText() || url.trim();
+        link.textContent = selected || url.trim();
       } else {
         link.appendChild(range.extractContents());
       }
@@ -1013,7 +1123,7 @@ const page = String.raw`<!doctype html>
       notifyEditorInput(editor);
     }
     function insertTextAtCaret(editorId, text) {
-      const editor = focusEditorById(editorId);
+      const editor = $(editorId);
       const selection = window.getSelection();
       let range = selectedRangeInEditor(editor);
       if (!range) {
@@ -1026,9 +1136,9 @@ const page = String.raw`<!doctype html>
       range.insertNode(node);
       range.setStartAfter(node);
       range.collapse(true);
+      editor.focus();
       selection.removeAllRanges();
       selection.addRange(range);
-      editor.focus();
       savedEditorRanges[editorId] = range.cloneRange();
       notifyEditorInput(editor);
     }
@@ -1044,23 +1154,26 @@ const page = String.raw`<!doctype html>
     });
     document.querySelectorAll(".toolbar button").forEach(btn => {
       btn.onmousedown = (event) => event.preventDefault();
-      btn.onclick = () => {
+      btn.onclick = async () => {
         const editorId = btn.dataset.editor || "editor";
-        focusEditorById(editorId);
-        if (btn.hasAttribute("data-format-link")) return applyLink(editorId);
+        if (btn.hasAttribute("data-format-link")) return await applyLink(editorId);
         if (btn.hasAttribute("data-inline-code")) return applyInlineWrapper(editorId, "code");
         if (btn.hasAttribute("data-code-block")) return applyBlockWrapper(editorId, "pre");
         if (btn.hasAttribute("data-spoiler")) return applyInlineWrapper(editorId, "span", "tg-spoiler");
         if (btn.hasAttribute("data-quote")) return applyBlockWrapper(editorId, "blockquote");
-        if (btn.dataset.cmd) document.execCommand(btn.dataset.cmd, false, null);
+        if (btn.dataset.cmd) {
+          activateEditorSelection(editorId);
+          document.execCommand(btn.dataset.cmd, false, null);
+        }
       };
     });
-    $("senlerVariable").onchange = () => {
+    $("senlerVariable").onchange = async () => {
       let value = $("senlerVariable").value;
       $("senlerVariable").value = "";
       if (!value) return;
       if (value === "__custom_user__" || value === "__custom_global__") {
-        const name = String(prompt("Имя переменной") || "").trim().toLowerCase().replace(/[^a-z0-9_]/g, "");
+        const raw = await askText("Имя переменной");
+        const name = String(raw || "").trim().toLowerCase().replace(/[^a-z0-9_]/g, "");
         if (!name) return;
         value = value === "__custom_user__" ? "{%" + name + "%}" : "[%" + name + "%]";
       }

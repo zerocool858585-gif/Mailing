@@ -453,7 +453,9 @@ async function fillMailingForm(cdp, campaign, item, schedule) {
         time: document.querySelector("#mailing_time")?.value || "",
         interval: document.querySelector("#mailing_interval")?.value || "",
         inlineButtons: buttons.filter((button) => button.type === "inline").length,
-        schedule
+        schedule,
+        sendNow0: document.querySelector("#mailing_send_now_0")?.checked || false,
+        sendNow1: document.querySelector("#mailing_send_now_1")?.checked || false
       };
     })()`
   );
@@ -465,12 +467,65 @@ async function submitMailing(cdp, schedule) {
   const result = await evalJson(
     cdp,
     `(() => new Promise((resolve) => {
-      const button = ${JSON.stringify(Boolean(schedule))}
-        ? [...document.querySelectorAll("button")].find((el) => (el.innerText || "").trim().includes("Запланировать рассылку"))
-        : document.querySelector(".save_draft_btn");
-      if (!button) return resolve({ ok: false, error: "button not found" });
-      button.click();
-      setTimeout(() => resolve({ ok: true, url: location.href, body: document.body.innerText.slice(0, 1000) }), 5000);
+      const shouldSchedule = ${JSON.stringify(Boolean(schedule))};
+      const startedAt = Date.now();
+      const textOf = (el) => (el.innerText || el.value || el.getAttribute("aria-label") || "").trim().replace(/\\s+/g, " ");
+      const isUsable = (el) => el && !el.disabled && !el.closest("[disabled]") && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
+      const listButtons = () => [...document.querySelectorAll("button,input[type=submit],input[type=button],a.btn,.btn,.save_draft_btn")]
+        .map((el, index) => ({
+          index,
+          text: textOf(el),
+          tag: el.tagName,
+          type: el.type || "",
+          className: String(el.className || ""),
+          disabled: !!el.disabled,
+          visible: !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length)
+        }))
+        .filter((item) => item.text || item.className);
+      const findButton = () => {
+        window.scrollTo(0, document.body.scrollHeight);
+        const candidates = [...document.querySelectorAll("button,input[type=submit],input[type=button],a.btn,.btn,.save_draft_btn")]
+          .filter(isUsable);
+        if (!shouldSchedule) {
+          return document.querySelector(".save_draft_btn") || candidates.find((el) => /сохран/i.test(textOf(el)));
+        }
+        const sendButton = [...document.querySelectorAll(".send_mailing_btn")]
+          .find((el) => !el.disabled && !el.closest("[disabled]"));
+        if (sendButton) return sendButton;
+        const textMatches = [
+          /запустить\\s+рассылку/i,
+          /запустить/i,
+          /запланировать\\s+рассылку/i,
+          /запланировать/i
+        ];
+        return candidates
+          .filter((el) => !String(el.className || "").includes("save_draft_btn"))
+          .find((el) => textMatches.some((pattern) => pattern.test(textOf(el))));
+      };
+      const tick = () => {
+        const button = findButton();
+        if (button) {
+          const clicked = {
+            text: textOf(button),
+            tag: button.tagName,
+            type: button.type || "",
+            className: String(button.className || "")
+          };
+          if (shouldSchedule && !/send_mailing_btn|запустить|запланировать/i.test(clicked.className + " " + clicked.text)) {
+            resolve({ ok: false, error: "refusing non-schedule button", schedule: shouldSchedule, clicked, buttons: listButtons(), body: document.body.innerText.slice(0, 1200) });
+            return;
+          }
+          button.click();
+          setTimeout(() => resolve({ ok: true, clicked, url: location.href, body: document.body.innerText.slice(0, 1000) }), 7000);
+          return;
+        }
+        if (Date.now() - startedAt > 15000) {
+          resolve({ ok: false, error: "button not found", schedule: shouldSchedule, buttons: listButtons(), body: document.body.innerText.slice(0, 1200) });
+          return;
+        }
+        setTimeout(tick, 500);
+      };
+      tick();
     }))()`
   );
   if (!result?.ok) throw new Error(`SaleBot mailing submit failed: ${JSON.stringify(result)}`);
