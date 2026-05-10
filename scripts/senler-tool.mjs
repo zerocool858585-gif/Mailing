@@ -305,6 +305,7 @@ async function fillEditor(cdp, campaign) {
         title: document.querySelector('input[name="name"]')?.value || "",
         sendDate: document.querySelector('input[name="send_date"]')?.value || "",
         textLength: text.length,
+        expectedMessageLength: String(campaign.message || "").length,
         hiddenMessageLength: document.querySelector('input[name="message"]')?.value?.length || 0,
         editorCount: document.querySelectorAll(".ql-editor").length,
         hasQuill: !!window.Quill,
@@ -314,7 +315,11 @@ async function fillEditor(cdp, campaign) {
     })()`
   );
   const expectsFormatting = (campaign.formats || []).length || (campaign.boldPhrases || []).length;
-  if (result.textLength < 500 || (expectsFormatting && !result.formatted)) throw new Error(`Editor fill failed: ${JSON.stringify(result)}`);
+  const expectedMessageLength = String(campaign.message || "").length;
+  const textFilled = expectedMessageLength > 0
+    && result.hiddenMessageLength === expectedMessageLength
+    && result.textLength >= expectedMessageLength;
+  if (!textFilled || (expectsFormatting && !result.formatted)) throw new Error(`Editor fill failed: ${JSON.stringify(result)}`);
   return result;
 }
 
