@@ -41,11 +41,17 @@ async function chromeJson(pathname, port = DEFAULT_PORT, method = "GET") {
 async function connectTarget(target) {
   let nextId = 1;
   const pending = new Map();
+  let closed = false;
   const ws = new WebSocket(target.webSocketDebuggerUrl);
   await new Promise((resolve, reject) => {
     ws.once("open", resolve);
     ws.once("error", reject);
   });
+  const rejectPending = (error) => {
+    closed = true;
+    for (const { reject } of pending.values()) reject(error);
+    pending.clear();
+  };
   ws.on("message", (data) => {
     const msg = JSON.parse(String(data));
     if (!msg.id || !pending.has(msg.id)) return;
@@ -54,11 +60,21 @@ async function connectTarget(target) {
     if (msg.error) reject(new Error(msg.error.message || JSON.stringify(msg.error)));
     else resolve(msg.result);
   });
+  ws.on("close", () => rejectPending(new Error(`Chrome DevTools connection closed for ${target.url || target.id || "target"}`)));
+  ws.on("error", (error) => rejectPending(error));
   const cdp = (method, params = {}) =>
     new Promise((resolve, reject) => {
+      if (closed || ws.readyState !== WebSocket.OPEN) {
+        reject(new Error(`Chrome DevTools connection is closed before ${method}`));
+        return;
+      }
       const id = nextId++;
       pending.set(id, { resolve, reject });
-      ws.send(JSON.stringify({ id, method, params }));
+      ws.send(JSON.stringify({ id, method, params }), (error) => {
+        if (!error) return;
+        pending.delete(id);
+        reject(error);
+      });
     });
   await cdp("Page.enable");
   await cdp("Runtime.enable");

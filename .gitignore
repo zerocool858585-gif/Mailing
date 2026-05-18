@@ -16,6 +16,8 @@ salebot/audiences.json
 codex-home-test/
 x/
 senler-mailings-skill/
+_package_build_*/
+senler_salebot_mailer_for_colleague_*.zip
 
 # Screenshots and temporary media captured during setup/debugging
 *.png

@@ -1,6 +1,7 @@
 ﻿import fs from "node:fs/promises";
 import path from "node:path";
 import { WebSocket } from "ws";
+import { findFileInputByAccept, setFileInputFilesAndDispatch } from "./lib/file-input-upload.mjs";
 
 const ROOT = path.resolve(new URL("..", import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1"));
 const DEFAULT_PORT = 9222;
@@ -42,11 +43,17 @@ async function chromeJson(pathname, port = DEFAULT_PORT, method = "GET") {
 async function connectTarget(target) {
   let nextId = 1;
   const pending = new Map();
+  let closed = false;
   const ws = new WebSocket(target.webSocketDebuggerUrl);
   await new Promise((resolve, reject) => {
     ws.once("open", resolve);
     ws.once("error", reject);
   });
+  const rejectPending = (error) => {
+    closed = true;
+    for (const { reject } of pending.values()) reject(error);
+    pending.clear();
+  };
   ws.on("message", (data) => {
     const msg = JSON.parse(String(data));
     if (!msg.id || !pending.has(msg.id)) return;
@@ -55,11 +62,21 @@ async function connectTarget(target) {
     if (msg.error) reject(new Error(msg.error.message || JSON.stringify(msg.error)));
     else resolve(msg.result);
   });
+  ws.on("close", () => rejectPending(new Error(`Chrome DevTools connection closed for ${target.url || target.id || "target"}`)));
+  ws.on("error", (error) => rejectPending(error));
   const cdp = (method, params = {}) =>
     new Promise((resolve, reject) => {
+      if (closed || ws.readyState !== WebSocket.OPEN) {
+        reject(new Error(`Chrome DevTools connection is closed before ${method}`));
+        return;
+      }
       const id = nextId++;
       pending.set(id, { resolve, reject });
-      ws.send(JSON.stringify({ id, method, params }));
+      ws.send(JSON.stringify({ id, method, params }), (error) => {
+        if (!error) return;
+        pending.delete(id);
+        reject(error);
+      });
     });
   await cdp("Page.enable");
   await cdp("Runtime.enable");
@@ -370,30 +387,8 @@ async function attachImage(cdp, campaign) {
   if (!campaign.imagePath) return { skipped: true };
   await fs.access(campaign.imagePath);
   const before = await evalJson(cdp, `document.querySelectorAll(".message_attachments .attachment_item").length`);
-  const doc = await cdp("DOM.getDocument", {});
-  const all = await cdp("DOM.querySelectorAll", { nodeId: doc.root.nodeId, selector: "input[type=file]" });
-  let imageNode = null;
-  let imageIndex = -1;
-  let imageInput = null;
-  const nodeIds = all.nodeIds || [];
-  for (let index = 0; index < nodeIds.length; index += 1) {
-    const nodeId = nodeIds[index];
-    const attrs = await cdp("DOM.getAttributes", { nodeId });
-    const pairs = attrs.attributes || [];
-    const map = Object.fromEntries(Array.from({ length: Math.floor(pairs.length / 2) }, (_, i) => [pairs[i * 2], pairs[i * 2 + 1]]));
-    if ((map.accept || "").includes("image")) {
-      imageNode = nodeId;
-      imageIndex = index;
-      imageInput = {
-        index,
-        accept: map.accept || "",
-        id: map.id || "",
-        name: map.name || "",
-        className: map.class || ""
-      };
-    }
-  }
-  if (!imageNode) {
+  const imageInput = await findFileInputByAccept(cdp, { acceptIncludes: "image" });
+  if (!imageInput) {
     const inputs = await evalJson(
       cdp,
       `(() => [...document.querySelectorAll("input[type=file]")].map((el, index) => ({
@@ -406,24 +401,7 @@ async function attachImage(cdp, campaign) {
     );
     throw new Error(`Image file input not found: ${JSON.stringify(inputs)}`);
   }
-  await cdp("DOM.setFileInputFiles", { nodeId: imageNode, files: [campaign.imagePath] });
-  const dispatch = await evalJson(
-    cdp,
-    `(() => {
-      const input = [...document.querySelectorAll("input[type=file]")][${imageIndex}];
-      if (!input) return { dispatched: false, reason: "input_not_found" };
-      input.dispatchEvent(new Event("input", { bubbles: true }));
-      input.dispatchEvent(new Event("change", { bubbles: true }));
-      return {
-        dispatched: true,
-        files: input.files?.length || 0,
-        accept: input.accept || "",
-        id: input.id || "",
-        name: input.name || "",
-        className: String(input.className || "")
-      };
-    })()`
-  );
+  const dispatch = await setFileInputFilesAndDispatch(cdp, { nodeId: imageInput.nodeId, filePath: campaign.imagePath });
   try {
     await waitFor(cdp, `document.querySelectorAll(".message_attachments .attachment_item").length > ${before}`, 90000);
   } catch (error) {
