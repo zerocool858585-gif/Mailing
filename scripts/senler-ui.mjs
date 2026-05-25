@@ -748,6 +748,87 @@ const page = String.raw`<!doctype html>
       if (!res.ok) throw new Error(json.error || "Ошибка");
       return json;
     }
+    const humanBytes = (bytes) => {
+      if (!Number.isFinite(bytes)) return "";
+      if (bytes < 1024 * 1024) return Math.round(bytes / 1024) + " КБ";
+      return (bytes / 1024 / 1024).toFixed(1) + " МБ";
+    };
+    const isImageFile = (file) => {
+      const type = String(file?.type || "").toLowerCase();
+      const name = String(file?.name || "");
+      return type.startsWith("image/") || /\.(png|jpe?g|webp|gif|bmp)$/i.test(name);
+    };
+    async function normalizeImageForUpload(file) {
+      if (!file || !isImageFile(file)) throw new Error("Выбранный файл не похож на картинку.");
+      const maxSide = 2560;
+      const maxBytes = 4 * 1024 * 1024;
+      const startQuality = 0.86;
+      const minQuality = 0.72;
+      const image = await new Promise((resolve, reject) => {
+        const url = URL.createObjectURL(file);
+        const img = new Image();
+        img.onload = () => {
+          URL.revokeObjectURL(url);
+          resolve(img);
+        };
+        img.onerror = () => {
+          URL.revokeObjectURL(url);
+          reject(new Error("Браузер не смог прочитать картинку. Попробуй сохранить её как обычный JPG или PNG."));
+        };
+        img.src = url;
+      });
+      const sourceWidth = image.naturalWidth || image.width || 0;
+      const sourceHeight = image.naturalHeight || image.height || 0;
+      if (!sourceWidth || !sourceHeight) throw new Error("У картинки не удалось определить размер.");
+      let scale = Math.min(1, maxSide / Math.max(sourceWidth, sourceHeight));
+      let width = Math.max(1, Math.round(sourceWidth * scale));
+      let height = Math.max(1, Math.round(sourceHeight * scale));
+      const canvas = document.createElement("canvas");
+      const ctx = canvas.getContext("2d");
+      if (!ctx) throw new Error("Браузер не смог подготовить картинку для загрузки.");
+      const toBlob = (quality) => new Promise((resolve, reject) => {
+        canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error("Не удалось сохранить картинку как JPG.")), "image/jpeg", quality);
+      });
+      let blob = null;
+      let quality = startQuality;
+      for (let resizeAttempt = 0; resizeAttempt < 6; resizeAttempt += 1) {
+        canvas.width = width;
+        canvas.height = height;
+        ctx.fillStyle = "#fff";
+        ctx.fillRect(0, 0, width, height);
+        ctx.drawImage(image, 0, 0, width, height);
+        quality = startQuality;
+        while (quality >= minQuality) {
+          blob = await toBlob(quality);
+          if (blob.size <= maxBytes) break;
+          quality -= 0.07;
+        }
+        if (blob && (blob.size <= maxBytes || Math.max(width, height) <= 1280)) break;
+        width = Math.max(1, Math.round(width * 0.85));
+        height = Math.max(1, Math.round(height * 0.85));
+      }
+      const outputName = (file.name.replace(/\.[^.]*$/, "") || "image") + ".jpg";
+      return {
+        file: new File([blob], outputName, { type: "image/jpeg", lastModified: Date.now() }),
+        original: { size: file.size, width: sourceWidth, height: sourceHeight },
+        output: { size: blob.size, width, height }
+      };
+    }
+    async function uploadPreparedImage(file, targetInputId, label) {
+      log("Готовлю картинку для загрузки...");
+      const prepared = await normalizeImageForUpload(file);
+      const res = await fetch("/api/upload-image", {
+        method: "POST",
+        headers: { "x-filename": encodeURIComponent(prepared.file.name) },
+        body: await prepared.file.arrayBuffer()
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || "Не удалось загрузить картинку");
+      $(targetInputId).value = json.path;
+      const before = humanBytes(prepared.original.size);
+      const after = humanBytes(prepared.output.size);
+      log(label + ": " + json.path + "\\nПодготовлено для VK: " + before + " → " + after + ", " + prepared.output.width + "×" + prepared.output.height + " px");
+    }
     async function save() {
       const json = await api("/api/campaign", formData());
       log("Кампания сохранена: " + json.file);
@@ -888,32 +969,22 @@ const page = String.raw`<!doctype html>
       log("Лог очищен.");
     };
     $("imageFile").onchange = async () => {
-      const file = $("imageFile").files[0];
-      if (!file) return;
-      log("Загружаю картинку...");
-      const res = await fetch("/api/upload-image", {
-        method: "POST",
-        headers: { "x-filename": encodeURIComponent(file.name) },
-        body: await file.arrayBuffer()
-      });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.error || "Не удалось загрузить картинку");
-      $("imagePath").value = json.path;
-      log("Картинка выбрана: " + json.path);
+      try {
+        const file = $("imageFile").files[0];
+        if (!file) return;
+        await uploadPreparedImage(file, "imagePath", "Картинка выбрана");
+      } catch (error) {
+        log(error.message);
+      }
     };
     $("sbImageFile").onchange = async () => {
-      const file = $("sbImageFile").files[0];
-      if (!file) return;
-      log("Загружаю картинку SaleBot...");
-      const res = await fetch("/api/upload-image", {
-        method: "POST",
-        headers: { "x-filename": encodeURIComponent(file.name) },
-        body: await file.arrayBuffer()
-      });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.error || "Не удалось загрузить картинку");
-      $("sbImagePath").value = json.path;
-      log("Картинка SaleBot выбрана: " + json.path);
+      try {
+        const file = $("sbImageFile").files[0];
+        if (!file) return;
+        await uploadPreparedImage(file, "sbImagePath", "Картинка SaleBot выбрана");
+      } catch (error) {
+        log(error.message);
+      }
     };
     api("/api/campaign").then(({ campaign }) => {
       $("name").value = campaign.name || "";

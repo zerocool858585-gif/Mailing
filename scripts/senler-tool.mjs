@@ -120,6 +120,64 @@ async function waitFor(cdp, expression, timeout = 20000) {
   throw new Error(`Timeout: ${expression.slice(0, 100)}`);
 }
 
+function imageUploadDiagnosticsExpression(before) {
+  return `(() => {
+    const uploadText = [...document.querySelectorAll(".message_attachments,.attachment_item,.file_upload,.progress,.alert,.toast,.error,.help-block,.invalid-feedback,.text-danger")]
+      .map(el => (el.innerText || el.textContent || "").trim().replace(/\\s+/g, " "))
+      .filter(Boolean)
+      .slice(0, 30);
+    const uploadError = uploadText.find(text => /ошибка|не загружен|failed|error/i.test(text)) || "";
+    return {
+      url: location.href,
+      readyState: document.readyState,
+      before: ${before},
+      after: document.querySelectorAll(".message_attachments .attachment_item").length,
+      uploadError,
+      fileInputs: [...document.querySelectorAll("input[type=file]")].map((el, index) => ({
+        index,
+        accept: el.accept || "",
+        id: el.id || "",
+        name: el.name || "",
+        className: String(el.className || ""),
+        files: el.files?.length || 0,
+        visible: !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length)
+      })),
+      attachmentsHtml: (document.querySelector(".message_attachments")?.innerHTML || "").slice(0, 1000),
+      uploadText
+    };
+  })()`;
+}
+
+async function waitForImageAttachment(cdp, before, timeout = 120000) {
+  const start = Date.now();
+  let diagnostics = null;
+  while (Date.now() - start < timeout) {
+    diagnostics = await evalJson(cdp, imageUploadDiagnosticsExpression(before));
+    if (diagnostics.after > before) return diagnostics;
+    if (diagnostics.uploadError) {
+      throw new Error(`Senler/VK rejected image upload: ${diagnostics.uploadError}`);
+    }
+    await sleep(500);
+  }
+  throw new Error(`Timeout: document.querySelectorAll(".message_attachments .attachment_item").length > ${before}; ${JSON.stringify(diagnostics)}`);
+}
+
+async function clearUploadNotices(cdp) {
+  await evalJson(
+    cdp,
+    `(() => {
+      for (const el of document.querySelectorAll(".alert .close,.alert [data-dismiss='alert'],.toast .close,.toast [data-dismiss='toast']")) {
+        el.click();
+      }
+      for (const el of document.querySelectorAll(".alert,.toast,.error,.help-block,.invalid-feedback,.text-danger")) {
+        const text = (el.innerText || el.textContent || "").trim();
+        if (/ошибка|не загружен|failed|error/i.test(text)) el.remove();
+      }
+      return true;
+    })()`
+  ).catch(() => {});
+}
+
 async function openWaiting(cdp, groupId) {
   await evalJson(cdp, `location.href = "https://senler.ru/cabinet/delivs/${groupId}#status=waiting"; true`);
   await sleep(2500);
@@ -386,52 +444,47 @@ async function addDateFilter(cdp, campaign) {
 async function attachImage(cdp, campaign) {
   if (!campaign.imagePath) return { skipped: true };
   await fs.access(campaign.imagePath);
-  const before = await evalJson(cdp, `document.querySelectorAll(".message_attachments .attachment_item").length`);
-  const imageInput = await findFileInputByAccept(cdp, { acceptIncludes: "image" });
-  if (!imageInput) {
-    const inputs = await evalJson(
-      cdp,
-      `(() => [...document.querySelectorAll("input[type=file]")].map((el, index) => ({
-        index,
-        accept: el.accept || "",
-        id: el.id || "",
-        name: el.name || "",
-        className: String(el.className || "")
-      })))()`
-    );
-    throw new Error(`Image file input not found: ${JSON.stringify(inputs)}`);
-  }
-  const dispatch = await setFileInputFilesAndDispatch(cdp, { nodeId: imageInput.nodeId, filePath: campaign.imagePath });
-  try {
-    await waitFor(cdp, `document.querySelectorAll(".message_attachments .attachment_item").length > ${before}`, 90000);
-  } catch (error) {
-    const diagnostics = await evalJson(
-      cdp,
-      `(() => ({
-        url: location.href,
-        readyState: document.readyState,
-        before: ${before},
-        after: document.querySelectorAll(".message_attachments .attachment_item").length,
-        fileInputs: [...document.querySelectorAll("input[type=file]")].map((el, index) => ({
+  const maxAttempts = 3;
+  let lastFailure = null;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const before = await evalJson(cdp, `document.querySelectorAll(".message_attachments .attachment_item").length`);
+    const imageInput = await findFileInputByAccept(cdp, { acceptIncludes: "image" });
+    if (!imageInput) {
+      const inputs = await evalJson(
+        cdp,
+        `(() => [...document.querySelectorAll("input[type=file]")].map((el, index) => ({
           index,
           accept: el.accept || "",
           id: el.id || "",
           name: el.name || "",
-          className: String(el.className || ""),
-          files: el.files?.length || 0,
-          visible: !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length)
-        })),
-        attachmentsHtml: (document.querySelector(".message_attachments")?.innerHTML || "").slice(0, 1000),
-        uploadText: [...document.querySelectorAll(".message_attachments,.attachment_item,.file_upload,.progress,.alert,.toast,.error,.help-block")]
-          .map(el => (el.innerText || el.textContent || "").trim().replace(/\\s+/g, " "))
-          .filter(Boolean)
-          .slice(0, 20)
-      }))()`
-    );
-    throw new Error(`Image attach failed: ${error.message}; ${JSON.stringify({ imageInput, dispatch, diagnostics })}`);
+          className: String(el.className || "")
+        })))()`
+      );
+      throw new Error(`Image file input not found: ${JSON.stringify(inputs)}`);
+    }
+
+    const dispatch = await setFileInputFilesAndDispatch(cdp, {
+      nodeId: imageInput.nodeId,
+      filePath: campaign.imagePath,
+      normalizeImage: true
+    });
+    try {
+      await waitForImageAttachment(cdp, before, 60000);
+      const after = await evalJson(cdp, `document.querySelectorAll(".message_attachments .attachment_item").length`);
+      return { imageInput: true, before, after, attached: after > before, attempts: attempt, dispatch };
+    } catch (error) {
+      const diagnostics = await evalJson(cdp, imageUploadDiagnosticsExpression(before));
+      lastFailure = { attempt, imageInput, dispatch, diagnostics, error: error.message };
+      if (attempt < maxAttempts) {
+        await clearUploadNotices(cdp);
+        await sleep(2000 * attempt);
+        continue;
+      }
+    }
   }
-  const after = await evalJson(cdp, `document.querySelectorAll(".message_attachments .attachment_item").length`);
-  return { imageInput: true, before, after, attached: after > before };
+
+  throw new Error(`Image attach failed after ${maxAttempts} attempts: ${lastFailure.error}; ${JSON.stringify(lastFailure)}`);
 }
 
 async function activateFromModal(cdp) {
