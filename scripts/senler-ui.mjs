@@ -150,6 +150,10 @@ const page = String.raw`<!doctype html>
     .check input { width: auto; }
     .check button { padding: 6px 10px; font-size: 13px; }
     #sbAudiences .check { justify-content: space-between; }
+    .button-list { display: grid; gap: 10px; margin-top: 6px; }
+    .button-row { display: grid; grid-template-columns: minmax(140px, .8fr) minmax(220px, 1.2fr) auto; gap: 8px; align-items: end; padding: 10px; border: 1px solid #d8dee6; border-radius: 6px; background: #f8fafc; }
+    .button-row label { margin-top: 0; }
+    .button-row button { min-width: 88px; min-height: 40px; }
     pre { margin: 14px 0 0; max-height: 420px; overflow: auto; background: #111827; color: #d1fae5; padding: 12px; border-radius: 8px; font-size: 12px; white-space: pre-wrap; }
     .warn { background: #fff7ed; border: 1px solid #fed7aa; color: #7c2d12; padding: 10px; border-radius: 6px; font-size: 13px; }
     details.setup { margin-top: 10px; border: 1px solid #d8dee6; border-radius: 6px; background: #f8fafc; }
@@ -158,7 +162,7 @@ const page = String.raw`<!doctype html>
     details.setup code { display: block; margin-top: 8px; padding: 10px; border-radius: 6px; background: #111827; color: #d1fae5; font-size: 12px; white-space: pre-wrap; word-break: break-word; }
     .copy-command { margin-top: 8px; }
     .log-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
-    @media (max-width: 900px) { .grid, .row { grid-template-columns: 1fr; } main { padding: 14px; } .action-bar { display: grid; } .final-action { margin-left: 0; padding-left: 0; border-left: 0; } select.action-select { width: 100%; } }
+    @media (max-width: 900px) { .grid, .row, .button-row { grid-template-columns: 1fr; } main { padding: 14px; } .action-bar { display: grid; } .final-action { margin-left: 0; padding-left: 0; border-left: 0; } select.action-select { width: 100%; } .button-row button { width: 100%; } }
   </style>
 </head>
 <body>
@@ -282,14 +286,11 @@ const page = String.raw`<!doctype html>
             <button type="button" data-editor="sbEditor" data-format-link title="Ссылка">Link</button>
           </div>
           <div id="sbEditor" contenteditable="true"></div>
-          <div class="row">
-            <div>
-              <label>Текст кнопки</label>
-              <input id="sbButtonText">
-            </div>
-            <div>
-              <label>Ссылка кнопки</label>
-              <input id="sbButtonUrl">
+          <div>
+            <label>Кнопки</label>
+            <div id="sbButtons" class="button-list"></div>
+            <div class="actions">
+              <button id="sbAddButton" type="button">Добавить кнопку</button>
             </div>
           </div>
           <div class="row">
@@ -494,7 +495,47 @@ const page = String.raw`<!doctype html>
     }
     connectLiveReload();
     function escapeHtml(text) {
-      return text.replace(/[&<>]/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[ch]));
+      return String(text ?? "").replace(/[&<>]/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[ch]));
+    }
+    function escapeAttr(text) {
+      return escapeHtml(text).replace(/"/g, "&quot;");
+    }
+    function saleBotButtonSource(campaign) {
+      const buttons = Array.isArray(campaign?.buttons) && campaign.buttons.length
+        ? campaign.buttons
+        : [{ text: campaign?.buttonText || "", url: campaign?.buttonUrl || "" }];
+      return buttons.length ? buttons : [{ text: "", url: "" }];
+    }
+    function saleBotButtonRows() {
+      return [...document.querySelectorAll("[data-sb-button-row]")].map((row, index) => ({
+        text: row.querySelector("[data-sb-button-text]")?.value.trim() || "",
+        url: row.querySelector("[data-sb-button-url]")?.value.trim() || "",
+        type: "inline",
+        line: index,
+        index_in_line: 0
+      }));
+    }
+    function saleBotButtonsData() {
+      return saleBotButtonRows().filter(button => button.text || button.url);
+    }
+    function renderSaleBotButtons(buttons = [{ text: "", url: "" }]) {
+      const rows = buttons.length ? buttons : [{ text: "", url: "" }];
+      $("sbButtons").innerHTML = rows.map((button, index) => {
+        const text = escapeAttr(button.text ?? button.buttonText ?? "");
+        const url = escapeAttr(button.url ?? button.buttonUrl ?? "");
+        return "<div class=\"button-row\" data-sb-button-row>" +
+          "<div><label>Текст кнопки</label><input data-sb-button-text value=\"" + text + "\"></div>" +
+          "<div><label>Ссылка кнопки</label><input data-sb-button-url value=\"" + url + "\"></div>" +
+          "<button type=\"button\" class=\"danger\" data-sb-button-remove=\"" + index + "\">Удалить</button>" +
+          "</div>";
+      }).join("");
+      document.querySelectorAll("[data-sb-button-remove]").forEach(button => {
+        button.onclick = () => {
+          const rows = saleBotButtonRows();
+          rows.splice(Number(button.dataset.sbButtonRemove), 1);
+          renderSaleBotButtons(rows.length ? rows : [{ text: "", url: "" }]);
+        };
+      });
     }
     function renderEditor(text, formats) {
       const flags = Array.from({ length: text.length }, () => ({ bold: false, italic: false, underline: false, link: "" }));
@@ -701,6 +742,8 @@ const page = String.raw`<!doctype html>
       };
     }
     function salebotData() {
+      const buttons = saleBotButtonsData();
+      const primaryButton = buttons.find(button => button.text && button.url) || buttons[0] || { text: "", url: "" };
       return {
         name: $("sbName").value,
         sendDate: fromDateTimeLocal($("sbSendDate").value),
@@ -709,8 +752,9 @@ const page = String.raw`<!doctype html>
         sheetId: saleBotSheetId,
         comment: "",
         message: editorToTgMarkdown($("sbEditor")),
-        buttonText: $("sbButtonText").value,
-        buttonUrl: $("sbButtonUrl").value,
+        buttons,
+        buttonText: primaryButton.text,
+        buttonUrl: primaryButton.url,
         buttonType: "inline",
         imagePath: $("sbImagePath").value,
         imageUrl: "",
@@ -866,6 +910,7 @@ const page = String.raw`<!doctype html>
       log("Сообщества сохранены: " + json.file);
     };
     $("sbSave").onclick = () => saveSalebot().catch(e => log(e.message));
+    $("sbAddButton").onclick = () => renderSaleBotButtons(saleBotButtonRows().concat({ text: "", url: "" }));
     $("sbOpen").onclick = () => salebotCommand("open").catch(e => log(e.message));
     $("sbInspect").onclick = () => salebotCommand("inspect").catch(e => log(e.message));
     $("sbRunFinal").onclick = async () => {
@@ -1019,8 +1064,7 @@ const page = String.raw`<!doctype html>
       $("sbName").value = campaign.name || "";
       $("sbSendDate").value = toDateTimeLocal(campaign.sendDate || "");
       $("sbEditor").innerHTML = tgMarkdownToHtml(campaign.message || "");
-      $("sbButtonText").value = campaign.buttonText || "";
-      $("sbButtonUrl").value = campaign.buttonUrl || "";
+      renderSaleBotButtons(saleBotButtonSource(campaign));
       $("sbImagePath").value = campaign.imagePath || "";
       selectedSaleBotAudiencesFromCampaign = campaign.selectedAudienceIds || [];
       renderSaleBotAudiences(selectedSaleBotAudiencesFromCampaign);

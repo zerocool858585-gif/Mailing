@@ -9,6 +9,16 @@
   "buttonText": "ОТКРЫТЬ",
   "buttonUrl": "https://example.com",
   "buttonType": "inline",
+  "buttons": [
+    {
+      "text": "ОТКРЫТЬ",
+      "url": "https://example.com"
+    },
+    {
+      "text": "ПОДРОБНЕЕ",
+      "url": "https://example.com/details"
+    }
+  ],
   "imagePath": "",
   "imageUrl": "",
   "selectedAudienceIds": [],

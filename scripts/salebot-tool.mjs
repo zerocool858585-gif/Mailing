@@ -1,6 +1,7 @@
 ﻿import fs from "node:fs/promises";
 import path from "node:path";
 import { WebSocket } from "ws";
+import { buildSaleBotButtons } from "./lib/salebot-buttons.mjs";
 
 const ROOT = path.resolve(new URL("..", import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1"));
 const DEFAULT_PORT = 9222;
@@ -164,16 +165,7 @@ function blockPayload(campaign, type, x, y) {
   if (type === 8) {
     return { ...base, description: campaign.comment || `${campaign.sendDate} - ${campaign.name}`, answer: "", buttons: "" };
   }
-  const buttons = [
-    {
-      line: 0,
-      index_in_line: 0,
-      text: campaign.buttonText,
-      type: "inline",
-      url: campaign.buttonUrl,
-      callback_link: false,
-    },
-  ];
+  const buttons = buildSaleBotButtons(campaign);
   return {
     ...base,
     description: campaign.name || "",
@@ -215,6 +207,7 @@ async function createBlocks(cdp, campaign) {
     cdp,
     `(() => new Promise((resolve) => {
       const campaign = ${JSON.stringify(campaign)};
+      const buildSaleBotButtons = ${buildSaleBotButtons.toString()};
       const makePayload = ${blockPayload.toString()};
       const audiences = campaign.selectedAudiences?.length ? campaign.selectedAudiences : [campaign.audience].filter(Boolean);
       const campaigns = audiences.length ? audiences.map((audience) => ({
