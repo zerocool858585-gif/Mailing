@@ -1,0 +1,27 @@
+{
+  "name": "Тестовая рассылка SaleBot",
+  "sendDate": "05.05.2026 18:00",
+  "projectId": "399135",
+  "sheetId": "385867",
+  "sheetUrl": "https://salebot.pro/projects/399135/messages?sheet_id=385867",
+  "comment": "",
+  "message": "*Привет!*\n\nЭто пример текста для рассылки SaleBot.",
+  "buttonText": "ОТКРЫТЬ",
+  "buttonUrl": "https://example.com",
+  "buttonType": "inline",
+  "buttons": [
+    {
+      "text": "ОТКРЫТЬ",
+      "url": "https://example.com"
+    },
+    {
+      "text": "ПОДРОБНЕЕ",
+      "url": "https://example.com/details"
+    }
+  ],
+  "imagePath": "",
+  "imageUrl": "",
+  "selectedAudienceIds": [],
+  "selectedAudiences": [],
+  "audience": {}
+}
