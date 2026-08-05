@@ -1,0 +1,16 @@
+{
+  "name": "senler-salebot-mailing-tool",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local UI and browser automation helpers for Senler and SaleBot mailings.",
+  "scripts": {
+    "senler": "node scripts/senler-tool.mjs",
+    "salebot": "node scripts/salebot-tool.mjs",
+    "senler-ui": "node scripts/senler-ui.mjs",
+    "senler-ui:dev": "node --watch scripts/senler-ui.mjs",
+    "test": "node --test scripts/lib/*.test.mjs"
+  },
+  "dependencies": {
+    "ws": "^8.20.0"
+  }
+}
