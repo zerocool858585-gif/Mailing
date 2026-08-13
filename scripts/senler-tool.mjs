@@ -1,4 +1,4 @@
-﻿import fs from "node:fs/promises";
+import fs from "node:fs/promises";
 import path from "node:path";
 import { WebSocket } from "ws";
 import { findFileInputByAccept, setFileInputFilesAndDispatch } from "./lib/file-input-upload.mjs";
@@ -360,7 +360,7 @@ async function fillEditor(cdp, campaign) {
       } else if (editor) {
         editor.textContent = campaign.message;
         editor.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: campaign.message }));
-        editor.dispatchEvent(new Event("change", { bubbles: true }));
+        editor?.dispatchEvent(new Event("change", { bubbles: true }));
       }
       const hidden = (name, val) => {
         const el = document.querySelector('input[name="' + name + '"]');
@@ -437,6 +437,57 @@ async function addDateFilter(cdp, campaign) {
         from: set('input[name="filter[date_subscription_from]"]', ${JSON.stringify(campaign.subscriptionFrom)}),
         to: set('input[name="filter[date_subscription_to]"]', "")
       };
+    })()`
+  );
+}
+
+async function addGroupFilter(cdp, campaign) {
+  if (!campaign.subscriberGroups || !campaign.subscriberGroups.length) {
+    return { skipped: true, reason: "no groups specified" };
+  }
+
+  await evalJson(
+    cdp,
+    `(() => {
+      const btn = [...document.querySelectorAll(".SubscriberFilter .btn,.SubscriberFilter,a,button,div")]
+        .find(el => (el.innerText || "").trim() === "Добавить фильтр" && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+      if (btn) btn.click();
+      return !!btn;
+    })()`
+  );
+  await sleep(500);
+  await evalJson(
+    cdp,
+    `(() => {
+      const items = [...document.querySelectorAll(".SubscriberFilter .dropdown-item,.dropdown-menu .dropdown-item,a,div")]
+        .filter(el => (el.innerText || "").trim() === "Группы подписчиков");
+      const item = items.find(el => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length) && !String(el.className || "").includes("disabled"))
+        || items.find(el => !String(el.className || "").includes("disabled"))
+        || items[0];
+      if (item) item.click();
+      return !!item;
+    })()`
+  );
+  await sleep(900);
+  return evalJson(
+    cdp,
+    `(() => {
+      const groupIds = ${JSON.stringify(campaign.subscriberGroups || [])};
+      const selectedGroups = [];
+      const select = document.querySelector('select[name="filter[subscriber_group_ids][]"]');
+      if (!select) {
+        return { ok: false, error: "Group filter select not found", selectedGroups: [] };
+      }
+      for (const groupId of groupIds) {
+        const option = [...select.options].find(opt => String(opt.value) === String(groupId));
+        if (option) {
+          option.selected = true;
+          selectedGroups.push({ id: groupId, text: option.text });
+        }
+      }
+      select.dispatchEvent(new Event("input", { bubbles: true }));
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+      return { ok: true, selectedGroups };
     })()`
   );
 }
@@ -526,7 +577,8 @@ async function createGroup(cdp, groupId, campaign, shouldActivate) {
   await waitFor(cdp, `location.href.includes("/cabinet/edit_deliv/") && !!document.querySelector('input[name="name"]')`, 25000);
   await waitFor(cdp, `!!document.querySelector(".ql-editor") && !!window.Quill`, 30000);
   const fields = await fillEditor(cdp, campaign);
-  const filter = await addDateFilter(cdp, campaign);
+  const dateFilter = await addDateFilter(cdp, campaign);
+  const groupFilter = await addGroupFilter(cdp, campaign);
   const image = await attachImage(cdp, campaign);
   const saved = await evalJson(
     cdp,
@@ -540,7 +592,7 @@ async function createGroup(cdp, groupId, campaign, shouldActivate) {
   await sleep(5000);
   const activation = shouldActivate ? await activateFromModal(cdp) : { skipped: true };
   await sleep(3500);
-  return { fields, filter, image, saved, activation };
+  return { fields, dateFilter, groupFilter, image, saved, activation };
 }
 
 async function run() {
