@@ -2,12 +2,14 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import { PROJECT_ROOT as ROOT, toProjectRelative } from "./lib/project-paths.mjs";
 
-const ROOT = path.resolve(new URL("..", import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1"));
+// Настройки локального HTTP-сервера и пути ко всем данным, которые редактирует UI.
 const PORT = Number(process.env.SENLER_UI_PORT || 4317);
 const CAMPAIGN_FILE = path.join(ROOT, "senler", "campaign.ui.json");
 const EXAMPLE_FILE = path.join(ROOT, "senler", "campaign.example.json");
 const SENLER_GROUPS_FILE = path.join(ROOT, "senler", "groups.json");
+const SUBSCRIBER_GROUPS_FILE = path.join(ROOT, "senler", "subscriber_groups.json");
 const SALEBOT_CAMPAIGN_FILE = path.join(ROOT, "salebot", "campaign.ui.json");
 const SALEBOT_EXAMPLE_FILE = path.join(ROOT, "salebot", "campaign.example.json");
 const SALEBOT_AUDIENCES_FILE = path.join(ROOT, "salebot", "audiences.json");
@@ -17,7 +19,9 @@ const SALEBOT_SHEET_ID = "385867";
 const UPLOAD_DIR = path.join(ROOT, "senler", "uploads");
 const LOG_DIR = path.join(ROOT, "senler", "logs");
 const LOG_FILE = path.join(LOG_DIR, "senler-ui.log");
+let senlerRunActive = false;
 
+// Записывает структурированное событие в JSONL-лог, предварительно создавая каталог.
 async function appendLog(event, payload = {}) {
   await fs.mkdir(LOG_DIR, { recursive: true });
   const line = JSON.stringify({
@@ -28,11 +32,13 @@ async function appendLog(event, payload = {}) {
   await fs.appendFile(LOG_FILE, `${line}\n`, "utf8");
 }
 
+// Завершает HTTP-ответ с заданным статусом, телом и MIME-типом.
 function send(res, status, body, type = "application/json; charset=utf-8") {
   res.writeHead(status, { "content-type": type });
   res.end(body);
 }
 
+// Безопасно проверяет наличие файла, не выбрасывая ошибку при его отсутствии.
 async function exists(file) {
   try {
     await fs.access(file);
@@ -42,16 +48,19 @@ async function exists(file) {
   }
 }
 
+// Читает UTF-8-файл и преобразует его содержимое из JSON в объект.
 async function readJson(file) {
   return JSON.parse(await fs.readFile(file, "utf8"));
 }
 
+// Собирает потоковое тело HTTP-запроса в одну UTF-8-строку.
 async function getBody(req) {
   const chunks = [];
   for await (const chunk of req) chunks.push(chunk);
   return Buffer.concat(chunks).toString("utf8");
 }
 
+// Запускает дочерний Node.js-инструмент, объединяет stdout/stderr и ограничивает работу десятью минутами.
 function runTool(script, args, logPrefix = "command") {
   return new Promise((resolve) => {
     const startedAt = Date.now();
@@ -88,14 +97,17 @@ function runTool(script, args, logPrefix = "command") {
   });
 }
 
+// Адаптер запуска CLI автоматизации Senler.
 function runSenler(args) {
-  return runTool("scripts/senler-tool.mjs", args, "command");
+  return runTool(path.join(ROOT, "scripts", "senler-tool.mjs"), args, "command");
 }
 
+// Адаптер запуска CLI автоматизации SaleBot.
 function runSalebot(args) {
-  return runTool("scripts/salebot-tool.mjs", args, "salebot");
+  return runTool(path.join(ROOT, "scripts", "salebot-tool.mjs"), args, "salebot");
 }
 
+// Вся клиентская страница встроена в сервер, поэтому UI не требует отдельной сборки или статики.
 const page = String.raw`<!doctype html>
 <html lang="ru">
 <head>
@@ -103,6 +115,7 @@ const page = String.raw`<!doctype html>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Senler рассылки</title>
   <style>
+    /* Базовая сетка, типографика и оформление вкладок приложения. */
     :root { color-scheme: light; font-family: Inter, Segoe UI, Arial, sans-serif; }
     body { margin: 0; background: #f6f7f9; color: #1f2933; }
     main { max-width: 1180px; margin: 0 auto; padding: 24px; }
@@ -162,11 +175,13 @@ const page = String.raw`<!doctype html>
     details.setup code { display: block; margin-top: 8px; padding: 10px; border-radius: 6px; background: #111827; color: #d1fae5; font-size: 12px; white-space: pre-wrap; word-break: break-word; }
     .copy-command { margin-top: 8px; }
     .log-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+    /* На узких экранах колонки превращаются в один вертикальный поток. */
     @media (max-width: 900px) { .grid, .row, .button-row { grid-template-columns: 1fr; } main { padding: 14px; } .action-bar { display: grid; } .final-action { margin-left: 0; padding-left: 0; border-left: 0; } select.action-select { width: 100%; } .button-row button { width: 100%; } }
   </style>
 </head>
 <body>
   <main>
+    <!-- Верхние вкладки разделяют создание рассылок и редактирование справочников. -->
     <h1>Рассылки</h1>
     <div class="tabs" role="tablist">
       <button id="tabSenler" class="tab-button active" type="button">Senler</button>
@@ -174,6 +189,7 @@ const page = String.raw`<!doctype html>
       <button id="tabCommunities" class="tab-button" type="button">Сообщества</button>
       <button id="tabAudiences" class="tab-button" type="button">Аудитории</button>
     </div>
+    <!-- Основная форма рассылки Senler. -->
     <div id="panelSenler" class="tab-panel active">
     <div class="grid">
       <section>
@@ -245,9 +261,15 @@ const page = String.raw`<!doctype html>
         </details>
         <label>Группы</label>
         <div class="groups">
-          <label class="check"><input type="checkbox" value="ege" checked> ЕГЭ</label>
-          <label class="check"><input type="checkbox" value="oge" checked> ОГЭ</label>
-          <label class="check"><input type="checkbox" value="common" checked> Общий</label>
+          <label class="check"><input type="checkbox" data-community-group value="ege" checked> ЕГЭ</label>
+          <label class="check"><input type="checkbox" data-community-group value="oge" checked> ОГЭ</label>
+          <label class="check"><input type="checkbox" data-community-group value="common" checked> Общий</label>
+        </div>
+        <label>Классы</label>
+        <div class="groups">
+          <label class="check"><input type="checkbox" data-subscriber-class value="9class"> 9 класс</label>
+          <label class="check"><input type="checkbox" data-subscriber-class value="10class"> 10 класс</label>
+          <label class="check"><input type="checkbox" data-subscriber-class value="11class"> 11 класс</label>
         </div>
         <p class="hint">Кнопка создания требует отдельного подтверждения. Проверка и открытие вкладок ничего не отправляют.</p>
         <div class="log-actions">
@@ -259,6 +281,7 @@ const page = String.raw`<!doctype html>
       </aside>
     </div>
     </div>
+    <!-- Форма Telegram-рассылки через SaleBot. -->
     <div id="panelSaleBot" class="tab-panel">
       <div class="grid">
         <section>
@@ -356,6 +379,12 @@ const page = String.raw`<!doctype html>
       </div>
       <label>Общий</label>
       <textarea id="groupCommon" class="compact" placeholder="436769"></textarea>
+      <label>9 классы</label>
+      <input id="groupGrade9" type="text" placeholder="Название группы">
+      <label>10 классы</label>
+      <input id="groupGrade10" type="text" placeholder="Название группы">
+      <label>11 классы</label>
+      <input id="groupGrade11" type="text" placeholder="Название группы">
       <div class="actions">
         <button id="groupsReload" type="button">Обновить из файла</button>
         <button id="groupsSave" type="button" class="primary">Сохранить сообщества</button>
@@ -382,13 +411,22 @@ const page = String.raw`<!doctype html>
     </section>
   </main>
   <script>
+    // Короткий помощник для поиска элемента по id и единая функция вывода статуса в оба лога.
     const $ = (id) => document.getElementById(id);
     const log = (text) => {
       if ($("log")) $("log").textContent = text;
       if ($("sbLog")) $("sbLog").textContent = text;
     };
-    const selectedGroups = () => [...document.querySelectorAll("#panelSenler .groups input:checked")].map(x => x.value).join(",");
+    // Функции ниже собирают выбранные сообщества, классы подписчиков и аудитории из формы.
+    const selectedGroups = () => [...document.querySelectorAll("#panelSenler [data-community-group]:checked")].map(x => x.value).join(",");
+    let subscriberGroupsByClass = {};
+    const selectedSubscriberGroups = () => [...new Set(
+      [...document.querySelectorAll("#panelSenler [data-subscriber-class]:checked")]
+        .flatMap(input => subscriberGroupsByClass[input.value] || [])
+        .map(String)
+    )];
     const selectedSaleBotAudienceIds = () => [...document.querySelectorAll("#sbAudiences input:checked")].map(x => x.value);
+    // Переключает видимую вкладку и запоминает выбор между перезагрузками страницы.
     function activateTab(name) {
       const saleBot = name === "salebot";
       const audiences = name === "audiences";
@@ -408,9 +446,11 @@ const page = String.raw`<!doctype html>
     $("tabCommunities").onclick = () => activateTab("communities");
     $("tabAudiences").onclick = () => activateTab("audiences");
     activateTab(localStorage.getItem("mailing-ui-tab") || "senler");
+    // Сервер подставляет настройки конкретного проекта SaleBot прямо в клиентский скрипт.
     const saleBotSheetUrl = ${JSON.stringify(SALEBOT_SHEET_URL)};
     const saleBotProjectId = ${JSON.stringify(SALEBOT_PROJECT_ID)};
     const saleBotSheetId = ${JSON.stringify(SALEBOT_SHEET_ID)};
+    // Преобразует дату кампании в формат HTML-поля datetime-local.
     function toDateTimeLocal(value) {
       const match = String(value || "").match(/^(\d{2})\.(\d{2})\.(\d{4})\s+(\d{2}):(\d{2})/);
       if (!match) {
@@ -419,11 +459,13 @@ const page = String.raw`<!doctype html>
       }
       return match[3] + "-" + match[2] + "-" + match[1] + "T" + match[4] + ":" + match[5];
     }
+    // Возвращает дату из HTML-поля в формат, ожидаемый CLI-инструментами.
     function fromDateTimeLocal(value) {
       const match = String(value || "").match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/);
       if (!match) return value || "";
       return match[3] + "." + match[2] + "." + match[1] + " " + match[4] + ":" + match[5];
     }
+    // Показывает готовые команды запуска Chrome с портом удалённой отладки.
     function renderCommands() {
       document.querySelectorAll(".command-setup").forEach(box => {
         const url = box.dataset.startUrl || "https://senler.ru/";
@@ -431,6 +473,7 @@ const page = String.raw`<!doctype html>
         box.querySelector(".cmdMac").textContent = "open -na \"Google Chrome\" --args --remote-debugging-port=9222 --user-data-dir=\"$HOME/Documents/Codex/chrome-senler\" " + url;
       });
     }
+    // Копирует текст через современный Clipboard API, а при отказе использует совместимый запасной путь.
     async function copyText(text, button) {
       const value = String(text || "");
       if (!value.trim()) return;
@@ -464,6 +507,7 @@ const page = String.raw`<!doctype html>
         return false;
       }
     }
+    // Временно заменяет подпись кнопки, чтобы подтвердить пользователю результат действия.
     function flashButton(button, text) {
       if (!button) return;
       const previous = button.textContent;
@@ -475,6 +519,7 @@ const page = String.raw`<!doctype html>
       }, 1200);
     }
     renderCommands();
+    // Подключает SSE-канал для автоматической перезагрузки страницы при перезапуске сервера.
     function connectLiveReload() {
       if (!window.EventSource) return;
       const source = new EventSource("/api/live-reload");
@@ -494,18 +539,21 @@ const page = String.raw`<!doctype html>
       };
     }
     connectLiveReload();
+    // Экранирование не позволяет пользовательским значениям превратиться в исполняемый HTML.
     function escapeHtml(text) {
       return String(text ?? "").replace(/[&<>]/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[ch]));
     }
     function escapeAttr(text) {
       return escapeHtml(text).replace(/"/g, "&quot;");
     }
+    // Нормализует старый одиночный формат кнопки и новый массив кнопок к одной структуре.
     function saleBotButtonSource(campaign) {
       const buttons = Array.isArray(campaign?.buttons) && campaign.buttons.length
         ? campaign.buttons
         : [{ text: campaign?.buttonText || "", url: campaign?.buttonUrl || "" }];
       return buttons.length ? buttons : [{ text: "", url: "" }];
     }
+    // Считывает строки редактора кнопок SaleBot из DOM.
     function saleBotButtonRows() {
       return [...document.querySelectorAll("[data-sb-button-row]")].map((row, index) => ({
         text: row.querySelector("[data-sb-button-text]")?.value.trim() || "",
@@ -518,6 +566,7 @@ const page = String.raw`<!doctype html>
     function saleBotButtonsData() {
       return saleBotButtonRows().filter(button => button.text || button.url);
     }
+    // Перерисовывает динамический список кнопок и подключает обработчики удаления.
     function renderSaleBotButtons(buttons = [{ text: "", url: "" }]) {
       const rows = buttons.length ? buttons : [{ text: "", url: "" }];
       $("sbButtons").innerHTML = rows.map((button, index) => {
@@ -537,6 +586,7 @@ const page = String.raw`<!doctype html>
         };
       });
     }
+    // Восстанавливает форматированный HTML редактора Senler из текста и диапазонов оформления.
     function renderEditor(text, formats) {
       const flags = Array.from({ length: text.length }, () => ({ bold: false, italic: false, underline: false, link: "" }));
       for (const fmt of formats || []) {
@@ -572,6 +622,7 @@ const page = String.raw`<!doctype html>
       if (prev.link) html += "</a>";
       $("editor").innerHTML = html;
     }
+    // Обходит DOM редактора и сериализует выделенные стили обратно в диапазоны Senler.
     function collectFormats() {
       const root = $("editor");
       const formats = [];
@@ -611,6 +662,7 @@ const page = String.raw`<!doctype html>
       walk(root);
       return formats;
     }
+    // Следующие помощники экранируют текст, код и URL по правилам Telegram MarkdownV2.
     function markdownEscape(text) {
       const specials = new RegExp("([_*\\[\\]()~" + String.fromCharCode(96) + ">#+\\-=|{}.!\\\\])", "g");
       return String(text ?? "").replace(specials, "\\$1");
@@ -624,6 +676,7 @@ const page = String.raw`<!doctype html>
     function isSafeHref(value) {
       return /^(https?:\/\/|mailto:)/i.test(String(value ?? "").trim());
     }
+    // Рекурсивно преобразует HTML из визуального редактора в безопасный Telegram MarkdownV2.
     function editorToTgMarkdown(root) {
       const backtick = String.fromCharCode(96);
       const fence = backtick.repeat(3);
@@ -686,6 +739,7 @@ const page = String.raw`<!doctype html>
       const specials = new RegExp("\\\\([_*\\[\\]()~" + String.fromCharCode(96) + ">#+\\-=|{}.!\\\\])", "g");
       return String(text ?? "").replace(specials, "$1");
     }
+    // Выполняет обратное преобразование MarkdownV2 в HTML для загрузки сохранённой кампании в редактор.
     function tgMarkdownToHtml(text) {
       const backtick = String.fromCharCode(96);
       const fence = backtick.repeat(3);
@@ -730,17 +784,20 @@ const page = String.raw`<!doctype html>
       html = html.replace(/_([^_\n]+)_/g, "<em>$1</em>");
       return restoreHtml(html.replace(/\n/g, "<br>"));
     }
+    // Собирает полную модель кампании Senler из текущего состояния формы.
     function formData() {
       return {
         name: $("name").value,
         sendDate: fromDateTimeLocal($("sendDate").value),
         subscriptionFrom: $("subscriptionFrom").value,
         imagePath: $("imagePath").value,
+        subscriberGroups: selectedSubscriberGroups(),
         boldPhrases: [],
         message: $("editor").innerText.replace(/\n$/, ""),
         formats: collectFormats()
       };
     }
+    // Собирает модель кампании SaleBot, включая кнопки и выбранные аудитории.
     function salebotData() {
       const buttons = saleBotButtonsData();
       const primaryButton = buttons.find(button => button.text && button.url) || buttons[0] || { text: "", url: "" };
@@ -763,12 +820,19 @@ const page = String.raw`<!doctype html>
         audience: {}
       };
     }
+    // Извлекает числовые идентификаторы сообществ из строк, ссылок или списков.
     function parseGroupIds(text) {
       return String(text || "")
         .split(/\r?\n|,|;/)
         .map(x => x.trim())
         .filter(Boolean)
         .map(x => (x.match(/(\d+)(?:\D*)$/) || [null, x])[1])
+        .filter(Boolean);
+    }
+    function parseGroupNames(text) {
+      return String(text || "")
+        .split(/\r?\n|;/)
+        .map(x => x.trim())
         .filter(Boolean);
     }
     function renderSenlerGroups(data) {
@@ -786,12 +850,31 @@ const page = String.raw`<!doctype html>
         }
       };
     }
+    // Заполняет редактор классов подписчиков данными из subscriber_groups.json.
+    function renderSubscriberGroups(data) {
+      subscriberGroupsByClass = data?.subscribe_groups || {};
+      $("groupGrade9").value = (subscriberGroupsByClass["9class"] || []).join("; ");
+      $("groupGrade10").value = (subscriberGroupsByClass["10class"] || []).join("; ");
+      $("groupGrade11").value = (subscriberGroupsByClass["11class"] || []).join("; ");
+    }
+    function subscriberGroupsData() {
+      return {
+        subscribe_groups: {
+          ...subscriberGroupsByClass,
+          "9class": parseGroupNames($("groupGrade9").value),
+          "10class": parseGroupNames($("groupGrade10").value),
+          "11class": parseGroupNames($("groupGrade11").value)
+        }
+      };
+    }
+    // Унифицированный JSON-клиент: GET без data и POST при переданном объекте.
     async function api(path, data) {
       const res = await fetch(path, { method: data ? "POST" : "GET", headers: { "content-type": "application/json" }, body: data ? JSON.stringify(data) : undefined });
       const json = await res.json();
       if (!res.ok) throw new Error(json.error || "Ошибка");
       return json;
     }
+    // Форматирование размера и первичная проверка выбранного изображения.
     const humanBytes = (bytes) => {
       if (!Number.isFinite(bytes)) return "";
       if (bytes < 1024 * 1024) return Math.round(bytes / 1024) + " КБ";
@@ -802,6 +885,7 @@ const page = String.raw`<!doctype html>
       const name = String(file?.name || "");
       return type.startsWith("image/") || /\.(png|jpe?g|webp|gif|bmp)$/i.test(name);
     };
+    // Уменьшает изображение и подбирает качество JPEG, чтобы уложиться в лимиты загрузки VK.
     async function normalizeImageForUpload(file) {
       if (!file || !isImageFile(file)) throw new Error("Выбранный файл не похож на картинку.");
       const maxSide = 2560;
@@ -858,6 +942,7 @@ const page = String.raw`<!doctype html>
         output: { size: blob.size, width, height }
       };
     }
+    // Загружает подготовленное изображение на локальный сервер и записывает полученный путь в форму.
     async function uploadPreparedImage(file, targetInputId, label) {
       log("Готовлю картинку для загрузки...");
       const prepared = await normalizeImageForUpload(file);
@@ -873,6 +958,7 @@ const page = String.raw`<!doctype html>
       const after = humanBytes(prepared.output.size);
       log(label + ": " + json.path + "\\nПодготовлено для VK: " + before + " → " + after + ", " + prepared.output.width + "×" + prepared.output.height + " px");
     }
+    // Сохранение форм и запуск внешних CLI-команд всегда проходят через серверный API.
     async function save() {
       const json = await api("/api/campaign", formData());
       log("Кампания сохранена: " + json.file);
@@ -893,22 +979,64 @@ const page = String.raw`<!doctype html>
       const json = await api("/api/run", { command: cmd, only: selectedGroups() });
       log(json.output || "Готово.");
     }
+    // Проверяет, что для боевого запуска Senler указаны и дата, и время, а значение существует в календаре.
+    function senlerSendDateForConfirmation() {
+      const input = $("sendDate");
+      const value = String(input.value || "").trim();
+      const match = value.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/);
+      if (!match || !input.checkValidity()) return "";
+      const [, year, month, day, hours, minutes] = match;
+      const date = new Date(Number(year), Number(month) - 1, Number(day), Number(hours), Number(minutes));
+      const isExact = date.getFullYear() === Number(year)
+        && date.getMonth() === Number(month) - 1
+        && date.getDate() === Number(day)
+        && date.getHours() === Number(hours)
+        && date.getMinutes() === Number(minutes);
+      return isExact ? day + "." + month + "." + year + " в " + hours + ":" + minutes : "";
+    }
+    // Основные кнопки Senler: сохранение, безопасная проверка и подтверждённый боевой запуск.
     $("save").onclick = () => save().catch(e => log(e.message));
     $("openTabs").onclick = () => command("open-tabs").catch(e => log(e.message));
     $("validate").onclick = () => command("validate").catch(e => log(e.message));
     $("run").onclick = async () => {
+      const confirmedDate = senlerSendDateForConfirmation();
+      if (!confirmedDate) {
+        alert("Укажите корректные дату и время рассылки.");
+        $("sendDate").focus();
+        return;
+      }
       if (!confirm("Создать и активировать рассылки в выбранных группах?")) return;
-      command("run").catch(e => log(e.message));
+      if (!confirm("Проверьте дату и время рассылки: " + confirmedDate + ".\n\nВсё верно?")) {
+        $("sendDate").focus();
+        return;
+      }
+      const button = $("run");
+      if (button.disabled) return;
+      button.disabled = true;
+      try {
+        await command("run");
+      } catch (error) {
+        log(error.message);
+      } finally {
+        button.disabled = false;
+      }
     };
+    // Обработчики редактора сообществ синхронизируют обе группы настроек с JSON-файлами.
     $("groupsReload").onclick = async () => {
-      const json = await api("/api/senler-groups");
-      renderSenlerGroups(json.groups);
-      log("Список сообществ обновлён из файла.");
+      const [communities, subscribers] = await Promise.all([api("/api/senler-groups"), api("/api/subscriber-groups")]);
+      renderSenlerGroups(communities.groups);
+      renderSubscriberGroups(subscribers.groups);
+      log("Сообщества и фильтры подписчиков обновлены из файлов.");
     };
     $("groupsSave").onclick = async () => {
-      const json = await api("/api/senler-groups", senlerGroupsData());
-      log("Сообщества сохранены: " + json.file);
+      const [communities, subscribers] = await Promise.all([
+        api("/api/senler-groups", senlerGroupsData()),
+        api("/api/subscriber-groups", subscriberGroupsData())
+      ]);
+      renderSubscriberGroups(subscribers.groups);
+      log("Сообщества сохранены: " + communities.file + "\nФильтры подписчиков сохранены: " + subscribers.file);
     };
+    // Действия SaleBot сохраняют форму перед передачей команды автоматизатору.
     $("sbSave").onclick = () => saveSalebot().catch(e => log(e.message));
     $("sbAddButton").onclick = () => renderSaleBotButtons(saleBotButtonRows().concat({ text: "", url: "" }));
     $("sbOpen").onclick = () => salebotCommand("open").catch(e => log(e.message));
@@ -923,9 +1051,11 @@ const page = String.raw`<!doctype html>
       if (!confirm(confirmText)) return;
       salebotCommand(command).catch(e => log(e.message));
     };
+    // Сохраняет текущий массив аудиторий SaleBot на сервере.
     async function saveAudiences() {
       return api("/api/salebot-audiences", { audiences: salebotAudiences });
     }
+    // Строит стабильный латинский идентификатор из введённого названия аудитории.
     function slugAudienceId(name) {
       return name.toLowerCase().replace(/[^a-zа-я0-9]+/gi, "_").replace(/^_+|_+$/g, "") || String(Date.now());
     }
@@ -935,6 +1065,7 @@ const page = String.raw`<!doctype html>
       $("audBot").value = "";
       $("audTags").value = "";
     }
+    // Загружает выбранную аудиторию в поля редактора.
     function loadAudienceEditor(id) {
       const audience = salebotAudiences.find(a => a.id === id);
       if (!audience) return clearAudienceEditor();
@@ -948,6 +1079,7 @@ const page = String.raw`<!doctype html>
         .map(a => "<option value=\"" + escapeHtml(a.id) + "\">" + escapeHtml(a.name || a.id) + "</option>")
         .join("");
     }
+    // Проверяет поля и добавляет новую аудиторию либо обновляет существующую.
     function addAudienceFromEditor() {
       const name = $("audName").value.trim();
       if (!name) return null;
@@ -988,6 +1120,7 @@ const page = String.raw`<!doctype html>
       const json = await saveAudiences();
       log("Аудитории сохранены: " + json.file);
     };
+    // Логи обеих интеграций используют общий серверный файл и одинаковые операции.
     $("showLog").onclick = async () => {
       const json = await api("/api/log");
       log(json.log || "Лог пуст.");
@@ -1013,6 +1146,7 @@ const page = String.raw`<!doctype html>
       await api("/api/log/clear", {});
       log("Лог очищен.");
     };
+    // Выбранные локальные картинки нормализуются и загружаются сразу после выбора.
     $("imageFile").onchange = async () => {
       try {
         const file = $("imageFile").files[0];
@@ -1031,6 +1165,7 @@ const page = String.raw`<!doctype html>
         log(error.message);
       }
     };
+    // Начальная загрузка сохранённых кампаний и справочников заполняет все вкладки UI.
     api("/api/campaign").then(({ campaign }) => {
       $("name").value = campaign.name || "";
       $("sendDate").value = toDateTimeLocal(campaign.sendDate || "");
@@ -1041,8 +1176,12 @@ const page = String.raw`<!doctype html>
     api("/api/senler-groups").then(({ groups }) => {
       renderSenlerGroups(groups);
     }).catch(e => log(e.message));
+    api("/api/subscriber-groups").then(({ groups }) => {
+      renderSubscriberGroups(groups);
+    }).catch(e => log(e.message));
     let salebotAudiences = [];
     let selectedSaleBotAudiencesFromCampaign = [];
+    // Рисует список аудиторий, сохраняя выбранные флажки, и связывает кнопки редактирования.
     function renderSaleBotAudiences(selected = []) {
       renderAudienceEditorOptions();
       $("sbAudiences").innerHTML = salebotAudiences.map(a => {
@@ -1078,6 +1217,7 @@ const page = String.raw`<!doctype html>
       if (editor) editor.focus();
       return editor;
     }
+    // Неблокирующий модальный ввод используется вместо стандартного prompt.
     function askText(title, initialValue = "") {
       return new Promise(resolve => {
         const overlay = document.createElement("div");
@@ -1116,6 +1256,7 @@ const page = String.raw`<!doctype html>
         input.select();
       });
     }
+    // Сохранённые Range удерживают позицию курсора, когда пользователь нажимает кнопку панели форматирования.
     const savedEditorRanges = {};
     function rangeBelongsToEditor(range, editor) {
       if (!range || !editor) return false;
@@ -1167,6 +1308,7 @@ const page = String.raw`<!doctype html>
       }
       return { editor, range };
     }
+    // Оборачивает выделение строчным тегом и переносит курсор за созданный элемент.
     function applyInlineWrapper(editorId, tagName, className = "") {
       const { editor, range } = activateEditorSelection(editorId);
       if (!range) return;
@@ -1189,6 +1331,7 @@ const page = String.raw`<!doctype html>
       savedEditorRanges[editorId] = nextRange.cloneRange();
       notifyEditorInput(editor);
     }
+    // Аналогично создаёт блочную разметку для цитат и блоков кода.
     function applyBlockWrapper(editorId, tagName) {
       const { editor, range } = activateEditorSelection(editorId);
       if (!range) return;
@@ -1210,6 +1353,7 @@ const page = String.raw`<!doctype html>
       savedEditorRanges[editorId] = nextRange.cloneRange();
       notifyEditorInput(editor);
     }
+    // Запрашивает URL и превращает выделение либо текущую позицию в ссылку.
     async function applyLink(editorId) {
       const { editor, range } = activateEditorSelection(editorId);
       if (!range) return;
@@ -1237,6 +1381,7 @@ const page = String.raw`<!doctype html>
       savedEditorRanges[editorId] = nextRange.cloneRange();
       notifyEditorInput(editor);
     }
+    // Вставляет переменную Senler в последнюю известную позицию курсора.
     function insertTextAtCaret(editorId, text) {
       const editor = $(editorId);
       const selection = window.getSelection();
@@ -1267,6 +1412,7 @@ const page = String.raw`<!doctype html>
       rememberEditorSelection("editor");
       rememberEditorSelection("sbEditor");
     });
+    // Единый маршрутизатор кнопок панели выбирает подходящее действие по data-атрибутам.
     document.querySelectorAll(".toolbar button").forEach(btn => {
       btn.onmousedown = (event) => event.preventDefault();
       btn.onclick = async () => {
@@ -1282,6 +1428,7 @@ const page = String.raw`<!doctype html>
         }
       };
     });
+    // Подставляет стандартную либо пользовательскую переменную в текст Senler.
     $("senlerVariable").onchange = async () => {
       let value = $("senlerVariable").value;
       $("senlerVariable").value = "";
@@ -1298,10 +1445,12 @@ const page = String.raw`<!doctype html>
 </body>
 </html>`;
 
+// Локальный API обслуживает встроенную страницу, JSON-настройки, загрузки и запуск автоматизаторов.
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
     if (req.method === "GET" && url.pathname === "/") return send(res, 200, page, "text/html; charset=utf-8");
+    // SSE-соединение поддерживает live reload и периодически отправляет heartbeat.
     if (req.method === "GET" && url.pathname === "/api/live-reload") {
       res.writeHead(200, {
         "content-type": "text/event-stream",
@@ -1314,16 +1463,21 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     await appendLog("request", { method: req.method, path: url.pathname });
+    // Чтение и сохранение кампании Senler; при первом запуске используется пример.
     if (req.method === "GET" && url.pathname === "/api/campaign") {
       const file = (await exists(CAMPAIGN_FILE)) ? CAMPAIGN_FILE : EXAMPLE_FILE;
-      return send(res, 200, JSON.stringify({ campaign: await readJson(file), file }));
+      const campaign = await readJson(file);
+      campaign.imagePath = toProjectRelative(campaign.imagePath);
+      return send(res, 200, JSON.stringify({ campaign, file }));
     }
     if (req.method === "POST" && url.pathname === "/api/campaign") {
       const data = JSON.parse(await getBody(req));
+      data.imagePath = toProjectRelative(data.imagePath);
       await fs.writeFile(CAMPAIGN_FILE, JSON.stringify(data, null, 2), "utf8");
       await appendLog("campaign.save", { file: CAMPAIGN_FILE, name: data.name, sendDate: data.sendDate });
       return send(res, 200, JSON.stringify({ ok: true, file: CAMPAIGN_FILE }));
     }
+    // CRUD справочников сообществ и групп подписчиков с очисткой повторов и пустых значений.
     if (req.method === "GET" && url.pathname === "/api/senler-groups") {
       const groups = (await exists(SENLER_GROUPS_FILE)) ? await readJson(SENLER_GROUPS_FILE) : { groups: { ege: [], oge: [], common: [] } };
       return send(res, 200, JSON.stringify({ groups, file: SENLER_GROUPS_FILE }));
@@ -1345,12 +1499,34 @@ const server = http.createServer(async (req, res) => {
       await appendLog("senler.groups.save", { file: SENLER_GROUPS_FILE, count: Object.values(next.groups).flat().length });
       return send(res, 200, JSON.stringify({ ok: true, file: SENLER_GROUPS_FILE, groups: next }));
     }
+    if (req.method === "GET" && url.pathname === "/api/subscriber-groups") {
+      const groups = (await exists(SUBSCRIBER_GROUPS_FILE)) ? await readJson(SUBSCRIBER_GROUPS_FILE) : { subscribe_groups: {} };
+      return send(res, 200, JSON.stringify({ groups, file: SUBSCRIBER_GROUPS_FILE }));
+    }
+    if (req.method === "POST" && url.pathname === "/api/subscriber-groups") {
+      const data = JSON.parse(await getBody(req));
+      const current = (await exists(SUBSCRIBER_GROUPS_FILE)) ? await readJson(SUBSCRIBER_GROUPS_FILE) : {};
+      const clean = (items) => [...new Set((items || []).map(x => String(x).trim()).filter(Boolean))];
+      const next = {
+        ...current,
+        subscribe_groups: Object.fromEntries(
+          Object.entries(data.subscribe_groups || {}).map(([key, items]) => [key, clean(items)])
+        )
+      };
+      await fs.writeFile(SUBSCRIBER_GROUPS_FILE, JSON.stringify(next, null, 2), "utf8");
+      await appendLog("subscriber.groups.save", { file: SUBSCRIBER_GROUPS_FILE, count: Object.values(next.subscribe_groups).flat().length });
+      return send(res, 200, JSON.stringify({ ok: true, file: SUBSCRIBER_GROUPS_FILE, groups: next }));
+    }
+    // Чтение и сохранение кампании и аудиторий SaleBot.
     if (req.method === "GET" && url.pathname === "/api/salebot-campaign") {
       const file = (await exists(SALEBOT_CAMPAIGN_FILE)) ? SALEBOT_CAMPAIGN_FILE : SALEBOT_EXAMPLE_FILE;
-      return send(res, 200, JSON.stringify({ campaign: await readJson(file), file }));
+      const campaign = await readJson(file);
+      campaign.imagePath = toProjectRelative(campaign.imagePath);
+      return send(res, 200, JSON.stringify({ campaign, file }));
     }
     if (req.method === "POST" && url.pathname === "/api/salebot-campaign") {
       const data = JSON.parse(await getBody(req));
+      data.imagePath = toProjectRelative(data.imagePath);
       await fs.mkdir(path.dirname(SALEBOT_CAMPAIGN_FILE), { recursive: true });
       await fs.writeFile(SALEBOT_CAMPAIGN_FILE, JSON.stringify(data, null, 2), "utf8");
       await appendLog("salebot.campaign.save", { file: SALEBOT_CAMPAIGN_FILE, name: data.name, sendDate: data.sendDate });
@@ -1367,6 +1543,7 @@ const server = http.createServer(async (req, res) => {
       await appendLog("salebot.audiences.save", { file: SALEBOT_AUDIENCES_FILE, count: (data.audiences || []).length });
       return send(res, 200, JSON.stringify({ ok: true, file: SALEBOT_AUDIENCES_FILE }));
     }
+    // Принимает бинарное изображение, очищает имя файла и сохраняет его в uploads.
     if (req.method === "POST" && url.pathname === "/api/upload-image") {
       await fs.mkdir(UPLOAD_DIR, { recursive: true });
       const rawName = decodeURIComponent(req.headers["x-filename"] || "image.png");
@@ -1378,8 +1555,9 @@ const server = http.createServer(async (req, res) => {
       for await (const chunk of req) chunks.push(chunk);
       await fs.writeFile(file, Buffer.concat(chunks));
       await appendLog("image.upload", { file });
-      return send(res, 200, JSON.stringify({ ok: true, path: file }));
+      return send(res, 200, JSON.stringify({ ok: true, path: toProjectRelative(file) }));
     }
+    // Отдаёт хвост лога и позволяет очистить его из интерфейса.
     if (req.method === "GET" && url.pathname === "/api/log") {
       const log = (await exists(LOG_FILE)) ? await fs.readFile(LOG_FILE, "utf8") : "";
       return send(res, 200, JSON.stringify({ file: LOG_FILE, log: log.split(/\r?\n/).slice(-250).join("\n") }));
@@ -1390,17 +1568,28 @@ const server = http.createServer(async (req, res) => {
       await appendLog("log.clear");
       return send(res, 200, JSON.stringify({ ok: true, file: LOG_FILE }));
     }
+    // Проверяет разрешённую команду Senler и не допускает двух одновременных боевых запусков.
     if (req.method === "POST" && url.pathname === "/api/run") {
       const data = JSON.parse(await getBody(req));
       const allowed = new Set(["open-tabs", "validate", "run"]);
       if (!allowed.has(data.command)) return send(res, 400, JSON.stringify({ error: "bad command" }));
-      const args = [data.command, "--campaign", "senler/campaign.ui.json"];
-      if (data.only) args.push("--only", data.only);
-      if (data.command === "run") args.push("--confirm-send");
-      await appendLog("command.start", { command: data.command, only: data.only || "", args });
-      const result = await runSenler(args);
-      return send(res, result.code === 0 ? 200 : 500, JSON.stringify(result));
+      if (data.command === "run" && senlerRunActive) {
+        await appendLog("command.rejected", { command: data.command, reason: "run already active" });
+        return send(res, 409, JSON.stringify({ error: "Создание и активация рассылок уже выполняется." }));
+      }
+      if (data.command === "run") senlerRunActive = true;
+      try {
+        const args = [data.command, "--campaign", "senler/campaign.ui.json"];
+        if (data.only) args.push("--only", data.only);
+        if (data.command === "run") args.push("--confirm-send");
+        await appendLog("command.start", { command: data.command, only: data.only || "", args });
+        const result = await runSenler(args);
+        return send(res, result.code === 0 ? 200 : 500, JSON.stringify(result));
+      } finally {
+        if (data.command === "run") senlerRunActive = false;
+      }
     }
+    // Запускает только разрешённые действия SaleBot и добавляет явные флаги подтверждения.
     if (req.method === "POST" && url.pathname === "/api/salebot-run") {
       const data = JSON.parse(await getBody(req));
       const allowed = new Set(["open", "inspect", "create-blocks", "create-drafts", "schedule"]);
@@ -1419,7 +1608,7 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
+// Сервер доступен только локально: наружу интерфейс и управляющие API не публикуются.
 server.listen(PORT, "127.0.0.1", () => {
   console.log(`Senler UI: http://127.0.0.1:${PORT}/`);
 });
-

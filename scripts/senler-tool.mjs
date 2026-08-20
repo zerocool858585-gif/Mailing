@@ -2,8 +2,8 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { WebSocket } from "ws";
 import { findFileInputByAccept, setFileInputFilesAndDispatch } from "./lib/file-input-upload.mjs";
+import { PROJECT_ROOT as ROOT, resolveProjectPath } from "./lib/project-paths.mjs";
 
-const ROOT = path.resolve(new URL("..", import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1"));
 const DEFAULT_PORT = 9222;
 
 function sleep(ms) {
@@ -441,60 +441,281 @@ async function addDateFilter(cdp, campaign) {
   );
 }
 
-async function addGroupFilter(cdp, campaign) {
+async function addGroupFilter(cdp, campaign, groupId) {
   if (!campaign.subscriberGroups || !campaign.subscriberGroups.length) {
     return { skipped: true, reason: "no groups specified" };
   }
 
-  await evalJson(
+  const requestedGroups = [...new Set(campaign.subscriberGroups.map((value) => String(value).trim()).filter(Boolean))];
+
+  const groupFilterVisible = await evalJson(
     cdp,
     `(() => {
-      const btn = [...document.querySelectorAll(".SubscriberFilter .btn,.SubscriberFilter,a,button,div")]
-        .find(el => (el.innerText || "").trim() === "Добавить фильтр" && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length));
-      if (btn) btn.click();
-      return !!btn;
+      const select = document.querySelector('select[name="filter[subscription_id][]"]');
+      const container = select?.closest('.form-group.card');
+      return !!select && !!container && !!(container.offsetWidth || container.offsetHeight || container.getClientRects().length);
     })()`
   );
-  await sleep(500);
-  await evalJson(
+
+  if (!groupFilterVisible) {
+    const addFilterClicked = await evalJson(
+      cdp,
+      `(() => {
+        const btn = [...document.querySelectorAll(".SubscriberFilter .btn,.SubscriberFilter,a,button,div")]
+          .find(el => (el.innerText || "").trim() === "Добавить фильтр" && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+        if (btn) btn.click();
+        return !!btn;
+      })()`
+    );
+    if (!addFilterClicked) {
+      throw new Error(`Subscriber filter button not found for channel ${groupId}`);
+    }
+
+    const visibleGroupFilterExpression = `(() => {
+      const isVisible = el => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
+      const item = document.querySelector('.SubscriberFilter .dropdown-menu .dropdown-item[data-value="subscription_id"]');
+      const menu = item?.closest(".dropdown-menu");
+      return !!item
+        && !!menu
+        && isVisible(menu)
+        && isVisible(item)
+        && !String(item.className || "").includes("disabled")
+        && item.getAttribute("aria-disabled") !== "true";
+    })()`;
+    try {
+      await waitFor(cdp, visibleGroupFilterExpression, 10000);
+    } catch {
+      throw new Error(`Visible subscriber group filter option did not appear for channel ${groupId}`);
+    }
+
+    const groupFilterClicked = await evalJson(
+      cdp,
+      `(() => {
+        const isVisible = el => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
+        const item = document.querySelector('.SubscriberFilter .dropdown-menu .dropdown-item[data-value="subscription_id"]');
+        const menu = item?.closest(".dropdown-menu");
+        const clickable = !!item
+          && !!menu
+          && isVisible(menu)
+          && isVisible(item)
+          && !String(item.className || "").includes("disabled")
+          && item.getAttribute("aria-disabled") !== "true";
+        if (clickable) item.click();
+        return clickable;
+      })()`
+    );
+    if (!groupFilterClicked) {
+      throw new Error(`Visible subscriber group filter option not found for channel ${groupId}`);
+    }
+  }
+
+  try {
+    await waitFor(
+      cdp,
+      `(() => {
+        const select = document.querySelector('select[name="filter[subscription_id][]"]');
+        const container = select?.closest('.form-group.card');
+        return !!select && !!container && !!(container.offsetWidth || container.offsetHeight || container.getClientRects().length);
+      })()`,
+      25000
+    );
+  } catch {
+    const diagnostics = await evalJson(
+      cdp,
+      `(() => {
+        const visible = el => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
+        const describe = (el, index) => ({
+          index,
+          tag: el.tagName,
+          type: el.type || "",
+          name: el.name || "",
+          id: el.id || "",
+          role: el.getAttribute("role") || "",
+          className: String(el.className || ""),
+          visible: visible(el),
+          text: (el.innerText || el.textContent || el.value || "").trim().replace(/\\s+/g, " ").slice(0, 300)
+        });
+        const filter = document.querySelector(".SubscriberFilter");
+        return {
+          url: location.href,
+          filterText: (filter?.innerText || "").trim().replace(/\\s+/g, " ").slice(0, 2000),
+          filterHtml: (filter?.outerHTML || "").slice(0, 12000),
+          filterControls: [...(filter?.querySelectorAll("select,input,textarea,button,[role]") || [])].map(describe),
+          visibleGroupItems: [...document.querySelectorAll("a,button,div,li,[role=option],[role=menuitem]")]
+            .filter(el => visible(el) && /групп/i.test((el.innerText || el.textContent || "").trim()))
+            .slice(0, 30)
+            .map(describe),
+          allSelects: [...document.querySelectorAll("select")].map(describe)
+        };
+      })()`
+    );
+    throw new Error(
+      `Subscriber group filter control did not appear for channel ${groupId}: ${JSON.stringify(diagnostics)}`
+    );
+  }
+
+  for (const requested of requestedGroups) {
+    const classQuery = requested.match(/\d+\s*класс(?:\s+или\s+младше)?/i)?.[0];
+    const searchQuery = classQuery
+      || requested.split(/[‐‑‒–—―−-]/).map((part) => part.trim()).filter(Boolean).at(-1)
+      || requested;
+    const alreadySelected = await evalJson(
+      cdp,
+      `(() => {
+        const requested = ${JSON.stringify(requested)};
+        const normalize = value => String(value || "")
+          .replace(/[‐‑‒–—―−-]+/g, " ")
+          .replace(/\\s+/g, " ")
+          .trim()
+          .toLowerCase();
+        const select = document.querySelector('select[name="filter[subscription_id][]"]');
+        return [...(select?.selectedOptions || [])].some(option =>
+          String(option.value) === requested || normalize(option.text).includes(normalize(requested))
+        );
+      })()`
+    );
+    if (alreadySelected) continue;
+
+    const searchOpened = await evalJson(
+      cdp,
+      `(() => {
+        const select = document.querySelector('select[name="filter[subscription_id][]"]');
+        const selection = select?.parentElement?.querySelector('.select2-selection');
+        if (selection) selection.click();
+        return !!selection;
+      })()`
+    );
+    if (!searchOpened) {
+      throw new Error(`Subscriber group search did not open for channel ${groupId}`);
+    }
+    await waitFor(
+      cdp,
+      `(() => {
+        const select = document.querySelector('select[name="filter[subscription_id][]"]');
+        const input = select?.parentElement?.querySelector('.select2-search__field');
+        return !!input && !!(input.offsetWidth || input.offsetHeight || input.getClientRects().length);
+      })()`,
+      5000
+    );
+    await evalJson(
+      cdp,
+      `(() => {
+        const select = document.querySelector('select[name="filter[subscription_id][]"]');
+        const input = select?.parentElement?.querySelector('.select2-search__field');
+        if (!input) return false;
+        input.value = ${JSON.stringify(searchQuery)};
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+        input.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true, key: "a" }));
+        return true;
+      })()`
+    );
+    const matchingResultExpression = `(() => {
+      const requested = ${JSON.stringify(requested)};
+      const normalize = value => String(value || "")
+        .replace(/[‐‑‒–—―−-]+/g, " ")
+        .replace(/\\s+/g, " ")
+        .trim()
+        .toLowerCase();
+      return [...document.querySelectorAll('.select2-results__option')].some(option =>
+        !!(option.offsetWidth || option.offsetHeight || option.getClientRects().length)
+        && normalize(option.innerText || option.textContent).includes(normalize(requested))
+      );
+    })()`;
+    try {
+      await waitFor(cdp, matchingResultExpression, 10000);
+      await evalJson(
+        cdp,
+        `(() => {
+          const requested = ${JSON.stringify(requested)};
+          const normalize = value => String(value || "")
+            .replace(/[‐‑‒–—―−-]+/g, " ")
+            .replace(/\\s+/g, " ")
+            .trim()
+            .toLowerCase();
+          const visibleOptions = [...document.querySelectorAll('.select2-results__option')]
+            .filter(item => !!(item.offsetWidth || item.offsetHeight || item.getClientRects().length));
+          const option = visibleOptions.find(item =>
+            normalize(item.innerText || item.textContent) === normalize(requested)
+          ) || visibleOptions.find(item =>
+            normalize(item.innerText || item.textContent).includes(normalize(requested))
+          );
+          if (option) {
+            option.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, view: window }));
+            option.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true, view: window }));
+            option.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
+          }
+          return !!option;
+        })()`
+      );
+      await sleep(300);
+    } catch {
+      await evalJson(cdp, `document.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Escape" })); true`).catch(() => {});
+    }
+  }
+
+  const selection = await evalJson(
     cdp,
     `(() => {
-      const items = [...document.querySelectorAll(".SubscriberFilter .dropdown-item,.dropdown-menu .dropdown-item,a,div")]
-        .filter(el => (el.innerText || "").trim() === "Группы подписчиков");
-      const item = items.find(el => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length) && !String(el.className || "").includes("disabled"))
-        || items.find(el => !String(el.className || "").includes("disabled"))
-        || items[0];
-      if (item) item.click();
-      return !!item;
-    })()`
-  );
-  await sleep(900);
-  return evalJson(
-    cdp,
-    `(() => {
-      const groupIds = ${JSON.stringify(campaign.subscriberGroups || [])};
-      const selectedGroups = [];
-      const select = document.querySelector('select[name="filter[subscriber_group_ids][]"]');
-      if (!select) {
-        return { ok: false, error: "Group filter select not found", selectedGroups: [] };
-      }
-      for (const groupId of groupIds) {
-        const option = [...select.options].find(opt => String(opt.value) === String(groupId));
-        if (option) {
-          option.selected = true;
-          selectedGroups.push({ id: groupId, text: option.text });
-        }
-      }
-      select.dispatchEvent(new Event("input", { bubbles: true }));
-      select.dispatchEvent(new Event("change", { bubbles: true }));
+      const requestedGroups = ${JSON.stringify(requestedGroups)};
+      const normalize = value => String(value || "")
+        .replace(/[‐‑‒–—―−-]+/g, " ")
+        .replace(/\\s+/g, " ")
+        .trim()
+        .toLowerCase();
+      const select = document.querySelector('select[name="filter[subscription_id][]"]');
+      if (!select) return { ok: false, error: "Group filter select not found", selectedGroups: [] };
+      const selectedOptions = [...select.selectedOptions];
+      const selectedGroups = requestedGroups.flatMap(requested => {
+        const option = selectedOptions.find(item =>
+          String(item.value) === requested || normalize(item.text).includes(normalize(requested))
+        );
+        return option ? [{ requested, id: String(option.value), text: option.text.trim() }] : [];
+      });
       return { ok: true, selectedGroups };
     })()`
   );
+
+  if (!selection.ok) throw new Error(`${selection.error} for channel ${groupId}`);
+  if (!selection.selectedGroups.length) {
+    return {
+      ok: false,
+      noMatch: true,
+      selectedGroups: [],
+      ignoredGroups: requestedGroups,
+      reason: `None of the requested subscriber groups exist in channel ${groupId}. Requested: ${requestedGroups.join("; ")}`,
+    };
+  }
+
+  await sleep(300);
+  const verifiedGroupIds = await evalJson(
+    cdp,
+    `(() => {
+      const select = document.querySelector('select[name="filter[subscription_id][]"]');
+      if (!select) return [];
+      return [...select.selectedOptions].map(option => String(option.value)).filter(Boolean);
+    })()`
+  );
+  const matchedGroupIds = selection.selectedGroups.map((group) => group.id);
+  const missingAfterChange = matchedGroupIds.filter((id) => !verifiedGroupIds.includes(id));
+  if (missingAfterChange.length) {
+    throw new Error(
+      `Senler did not retain subscriber group selection for channel ${groupId}: ${missingAfterChange.join(", ")}`
+    );
+  }
+
+  return {
+    ok: true,
+    selectedGroups: selection.selectedGroups,
+    ignoredGroups: requestedGroups.filter(
+      (requested) => !selection.selectedGroups.some((group) => group.requested === requested)
+    ),
+  };
 }
 
 async function attachImage(cdp, campaign) {
   if (!campaign.imagePath) return { skipped: true };
-  await fs.access(campaign.imagePath);
+  const imagePath = resolveProjectPath(campaign.imagePath);
+  await fs.access(imagePath);
   const maxAttempts = 3;
   let lastFailure = null;
 
@@ -517,7 +738,7 @@ async function attachImage(cdp, campaign) {
 
     const dispatch = await setFileInputFilesAndDispatch(cdp, {
       nodeId: imageInput.nodeId,
-      filePath: campaign.imagePath,
+      filePath: imagePath,
       normalizeImage: true
     });
     try {
@@ -578,7 +799,7 @@ async function createGroup(cdp, groupId, campaign, shouldActivate) {
   await waitFor(cdp, `!!document.querySelector(".ql-editor") && !!window.Quill`, 30000);
   const fields = await fillEditor(cdp, campaign);
   const dateFilter = await addDateFilter(cdp, campaign);
-  const groupFilter = await addGroupFilter(cdp, campaign);
+  const groupFilter = await addGroupFilter(cdp, campaign, groupId);
   const image = await attachImage(cdp, campaign);
   const saved = await evalJson(
     cdp,
@@ -590,7 +811,15 @@ async function createGroup(cdp, groupId, campaign, shouldActivate) {
     })()`
   );
   await sleep(5000);
-  const activation = shouldActivate ? await activateFromModal(cdp) : { skipped: true };
+  const activationAllowed = shouldActivate && !groupFilter.noMatch;
+  const activation = activationAllowed
+    ? await activateFromModal(cdp)
+    : {
+        skipped: true,
+        reason: groupFilter.noMatch
+          ? "subscriber groups not found in channel; mailing left inactive"
+          : "activation not requested"
+      };
   await sleep(3500);
   return { fields, dateFilter, groupFilter, image, saved, activation };
 }
@@ -634,16 +863,20 @@ Before use, start Chrome with:
     }
     for (const group of selected) {
       const tab = await openOrReuse(group.id, port);
-      let validation = await validateGroup(tab.cdp, group.id, campaign);
-      if (!validation.ok && createMissing) {
-        console.log(`[create] ${group.bucket} ${group.id}`);
-        const created = await createGroup(tab.cdp, group.id, campaign, shouldActivate);
-        validation = await validateGroup(tab.cdp, group.id, campaign);
-        console.log(JSON.stringify({ group: group.id, created, validation: validation.details }, null, 2));
-      } else {
-        console.log(JSON.stringify({ group: group.id, bucket: group.bucket, ok: validation.ok, validation: validation.details }, null, 2));
+      try {
+        let validation = await validateGroup(tab.cdp, group.id, campaign);
+        if (!validation.ok && createMissing) {
+          console.log(`[create] ${group.bucket} ${group.id}`);
+          const created = await createGroup(tab.cdp, group.id, campaign, shouldActivate);
+          validation = await validateGroup(tab.cdp, group.id, campaign);
+          console.log(JSON.stringify({ group: group.id, created, validation: validation.details }, null, 2));
+        } else {
+          console.log(JSON.stringify({ group: group.id, bucket: group.bucket, ok: validation.ok, validation: validation.details }, null, 2));
+        }
+        await sleep(500);
+      } finally {
+        tab.ws.close();
       }
-      await sleep(500);
     }
     return;
   }

@@ -2,8 +2,8 @@
 import path from "node:path";
 import { WebSocket } from "ws";
 import { buildSaleBotButtons } from "./lib/salebot-buttons.mjs";
+import { PROJECT_ROOT as ROOT, resolveProjectPath } from "./lib/project-paths.mjs";
 
-const ROOT = path.resolve(new URL("..", import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1"));
 const DEFAULT_PORT = 9222;
 
 function sleep(ms) {
@@ -281,6 +281,7 @@ async function openMessageEditor(cdp, messageId) {
 }
 
 async function attachImageToMessage(cdp, messageId, imagePath) {
+  imagePath = resolveProjectPath(imagePath);
   await fs.access(imagePath);
   await openMessageEditor(cdp, messageId);
   await evalJson(

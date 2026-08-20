@@ -83,7 +83,7 @@
   "sendDate": "05.08.2026 17:00",
   "subscriptionFrom": "01.06.2025 00:00",
   "subscriberGroups": ["430334", "474419", "578641"],
-  "imagePath": "C:\\Projects\\senler_salebot_mailer\\senler\\uploads\\summer-school.jpg",
+  "imagePath": "senler/uploads/summer-school.jpg",
   "boldPhrases": ["Летняя школа", "регистрация закрыта"],
   "message": "Привет!\n\nЛетняя школа ЕГЭХАБ — финальная неделя!\n\nРегистрация закрыта. Осталось несколько мест.",
   "formats": [
