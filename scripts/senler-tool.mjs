@@ -3,6 +3,7 @@ import path from "node:path";
 import { WebSocket } from "ws";
 import { findFileInputByAccept, setFileInputFilesAndDispatch } from "./lib/file-input-upload.mjs";
 import { PROJECT_ROOT as ROOT, resolveProjectPath } from "./lib/project-paths.mjs";
+import { selectSenlerChannels } from "./lib/senler-channel-selection.mjs";
 
 const DEFAULT_PORT = 9222;
 
@@ -93,16 +94,6 @@ async function openOrReuse(groupId, port) {
   const tab = await connectTarget(target);
   await tab.cdp("Page.bringToFront");
   return tab;
-}
-
-function selectedGroups(groups, pick = "all") {
-  const chunks = [];
-  const keys = pick === "all" ? ["ege", "oge", "common"] : pick.split(",").map((x) => x.trim());
-  for (const key of keys) {
-    if (!groups.groups[key]) throw new Error(`Unknown group bucket: ${key}`);
-    chunks.push(...groups.groups[key].map((id) => ({ id, bucket: key })));
-  }
-  return chunks;
 }
 
 async function evalJson(cdp, expression) {
@@ -441,23 +432,124 @@ async function addDateFilter(cdp, campaign) {
   );
 }
 
-async function addGroupFilter(cdp, campaign, groupId) {
-  if (!campaign.subscriberGroups || !campaign.subscriberGroups.length) {
+async function waitForRecipientCount(cdp, timeoutMs = 10000) {
+  await sleep(1200);
+  const startedAt = Date.now();
+  let previous = null;
+  let stableReads = 0;
+  let lastResult = { found: false, count: null, matches: [] };
+
+  while (Date.now() - startedAt < timeoutMs) {
+    lastResult = await evalJson(
+      cdp,
+      `(() => {
+        const text = document.body.innerText || "";
+        const matches = [...text.matchAll(/(?:Получатели|Получателей|Подписчики|Подписчиков)\\s*:?\\s*([\\d \\u00a0]+)/gi)]
+          .map(match => ({
+            label: match[0].replace(/\\s+/g, " ").trim(),
+            count: Number(match[1].replace(/[ \\u00a0]/g, ""))
+          }))
+          .filter(item => Number.isFinite(item.count));
+        const preferred = matches.find(item => /^Получател/i.test(item.label)) || matches[0] || null;
+        return {
+          found: !!preferred,
+          count: preferred?.count ?? null,
+          matches: matches.slice(0, 20)
+        };
+      })()`
+    );
+
+    if (lastResult.found) {
+      if (lastResult.count === previous) stableReads += 1;
+      else stableReads = 1;
+      previous = lastResult.count;
+      if (stableReads >= 3) return lastResult;
+    }
+    await sleep(400);
+  }
+
+  return lastResult;
+}
+
+async function removeDateFilter(cdp) {
+  const cleared = await evalJson(
+    cdp,
+    `(() => {
+      const inputs = [
+        document.querySelector('input[name="filter[date_subscription_from]"]'),
+        document.querySelector('input[name="filter[date_subscription_to]"]')
+      ].filter(Boolean);
+      for (const input of inputs) {
+        input.value = "";
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+        input.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+      return { cleared: inputs.length > 0, inputs: inputs.length };
+    })()`
+  );
+  await sleep(300);
+
+  const removed = await evalJson(
+    cdp,
+    `(() => {
+      const input = document.querySelector('input[name="filter[date_subscription_from]"]')
+        || document.querySelector('input[name="filter[date_subscription_to]"]');
+      const container = input?.closest('.form-group.card,.card,.filter-item,.SubscriberFilter > div');
+      if (!container) return { clicked: false, reason: "date filter container not found" };
+      const controls = [...container.querySelectorAll('button,a,[role="button"],.close,[class*="remove"],[class*="delete"]')];
+      const describe = el => [
+        el.innerText,
+        el.textContent,
+        el.title,
+        el.getAttribute("aria-label"),
+        el.className
+      ].filter(Boolean).join(" ").replace(/\\s+/g, " ").trim();
+      const control = controls.find(el => /удал|убрать|remove|delete|trash|close|times/i.test(describe(el)))
+        || controls.find(el => /^[×✕]$/.test((el.innerText || el.textContent || "").trim()));
+      if (control) control.click();
+      return { clicked: !!control, control: control ? describe(control).slice(0, 200) : "" };
+    })()`
+  );
+
+  await sleep(900);
+  return { ...cleared, ...removed };
+}
+
+async function removeDateFilterWhenAudienceIsEmpty(cdp) {
+  const before = await waitForRecipientCount(cdp);
+  if (!before.found || before.count !== 0) {
+    return { removed: false, before, reason: before.found ? "recipient count is not zero" : "recipient count not found" };
+  }
+
+  const removal = await removeDateFilter(cdp);
+  const after = await waitForRecipientCount(cdp);
+  console.warn(
+    `[warning] Subscription date filter produced 0 recipients; filter removed. `
+      + `Recipients after fallback: ${after.found ? after.count : "unknown"}`
+  );
+  return { removed: true, before, removal, after };
+}
+
+// Общая логика для двух фильтров Senler по группам подписчиков: "Группа подписчиков" (включение)
+// и "За исключением группы" (исключение). Оба используют одинаковый select2-виджет,
+// отличаются только name у <select> и data-value у пункта меню "Добавить фильтр".
+async function applySubscriberGroupFilter(cdp, { groupId, requestedGroups, selectName, dropdownValue, filterLabel }) {
+  if (!requestedGroups.length) {
     return { skipped: true, reason: "no groups specified" };
   }
 
-  const requestedGroups = [...new Set(campaign.subscriberGroups.map((value) => String(value).trim()).filter(Boolean))];
+  const selectSelector = `select[name="${selectName}"]`;
 
-  const groupFilterVisible = await evalJson(
+  const filterVisible = await evalJson(
     cdp,
     `(() => {
-      const select = document.querySelector('select[name="filter[subscription_id][]"]');
+      const select = document.querySelector(${JSON.stringify(selectSelector)});
       const container = select?.closest('.form-group.card');
       return !!select && !!container && !!(container.offsetWidth || container.offsetHeight || container.getClientRects().length);
     })()`
   );
 
-  if (!groupFilterVisible) {
+  if (!filterVisible) {
     const addFilterClicked = await evalJson(
       cdp,
       `(() => {
@@ -471,9 +563,9 @@ async function addGroupFilter(cdp, campaign, groupId) {
       throw new Error(`Subscriber filter button not found for channel ${groupId}`);
     }
 
-    const visibleGroupFilterExpression = `(() => {
+    const visibleItemExpression = `(() => {
       const isVisible = el => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
-      const item = document.querySelector('.SubscriberFilter .dropdown-menu .dropdown-item[data-value="subscription_id"]');
+      const item = document.querySelector('.SubscriberFilter .dropdown-menu .dropdown-item[data-value="${dropdownValue}"]');
       const menu = item?.closest(".dropdown-menu");
       return !!item
         && !!menu
@@ -483,16 +575,16 @@ async function addGroupFilter(cdp, campaign, groupId) {
         && item.getAttribute("aria-disabled") !== "true";
     })()`;
     try {
-      await waitFor(cdp, visibleGroupFilterExpression, 10000);
+      await waitFor(cdp, visibleItemExpression, 10000);
     } catch {
-      throw new Error(`Visible subscriber group filter option did not appear for channel ${groupId}`);
+      throw new Error(`Visible "${filterLabel}" filter option did not appear for channel ${groupId}`);
     }
 
-    const groupFilterClicked = await evalJson(
+    const itemClicked = await evalJson(
       cdp,
       `(() => {
         const isVisible = el => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
-        const item = document.querySelector('.SubscriberFilter .dropdown-menu .dropdown-item[data-value="subscription_id"]');
+        const item = document.querySelector('.SubscriberFilter .dropdown-menu .dropdown-item[data-value="${dropdownValue}"]');
         const menu = item?.closest(".dropdown-menu");
         const clickable = !!item
           && !!menu
@@ -504,8 +596,8 @@ async function addGroupFilter(cdp, campaign, groupId) {
         return clickable;
       })()`
     );
-    if (!groupFilterClicked) {
-      throw new Error(`Visible subscriber group filter option not found for channel ${groupId}`);
+    if (!itemClicked) {
+      throw new Error(`Visible "${filterLabel}" filter option not found for channel ${groupId}`);
     }
   }
 
@@ -513,7 +605,7 @@ async function addGroupFilter(cdp, campaign, groupId) {
     await waitFor(
       cdp,
       `(() => {
-        const select = document.querySelector('select[name="filter[subscription_id][]"]');
+        const select = document.querySelector(${JSON.stringify(selectSelector)});
         const container = select?.closest('.form-group.card');
         return !!select && !!container && !!(container.offsetWidth || container.offsetHeight || container.getClientRects().length);
       })()`,
@@ -550,7 +642,7 @@ async function addGroupFilter(cdp, campaign, groupId) {
       })()`
     );
     throw new Error(
-      `Subscriber group filter control did not appear for channel ${groupId}: ${JSON.stringify(diagnostics)}`
+      `"${filterLabel}" filter control did not appear for channel ${groupId}: ${JSON.stringify(diagnostics)}`
     );
   }
 
@@ -568,7 +660,7 @@ async function addGroupFilter(cdp, campaign, groupId) {
           .replace(/\\s+/g, " ")
           .trim()
           .toLowerCase();
-        const select = document.querySelector('select[name="filter[subscription_id][]"]');
+        const select = document.querySelector(${JSON.stringify(selectSelector)});
         return [...(select?.selectedOptions || [])].some(option =>
           String(option.value) === requested || normalize(option.text).includes(normalize(requested))
         );
@@ -579,19 +671,19 @@ async function addGroupFilter(cdp, campaign, groupId) {
     const searchOpened = await evalJson(
       cdp,
       `(() => {
-        const select = document.querySelector('select[name="filter[subscription_id][]"]');
+        const select = document.querySelector(${JSON.stringify(selectSelector)});
         const selection = select?.parentElement?.querySelector('.select2-selection');
         if (selection) selection.click();
         return !!selection;
       })()`
     );
     if (!searchOpened) {
-      throw new Error(`Subscriber group search did not open for channel ${groupId}`);
+      throw new Error(`"${filterLabel}" search did not open for channel ${groupId}`);
     }
     await waitFor(
       cdp,
       `(() => {
-        const select = document.querySelector('select[name="filter[subscription_id][]"]');
+        const select = document.querySelector(${JSON.stringify(selectSelector)});
         const input = select?.parentElement?.querySelector('.select2-search__field');
         return !!input && !!(input.offsetWidth || input.offsetHeight || input.getClientRects().length);
       })()`,
@@ -600,7 +692,7 @@ async function addGroupFilter(cdp, campaign, groupId) {
     await evalJson(
       cdp,
       `(() => {
-        const select = document.querySelector('select[name="filter[subscription_id][]"]');
+        const select = document.querySelector(${JSON.stringify(selectSelector)});
         const input = select?.parentElement?.querySelector('.select2-search__field');
         if (!input) return false;
         input.value = ${JSON.stringify(searchQuery)};
@@ -662,8 +754,8 @@ async function addGroupFilter(cdp, campaign, groupId) {
         .replace(/\\s+/g, " ")
         .trim()
         .toLowerCase();
-      const select = document.querySelector('select[name="filter[subscription_id][]"]');
-      if (!select) return { ok: false, error: "Group filter select not found", selectedGroups: [] };
+      const select = document.querySelector(${JSON.stringify(selectSelector)});
+      if (!select) return { ok: false, error: ${JSON.stringify(`"${filterLabel}" select not found`)}, selectedGroups: [] };
       const selectedOptions = [...select.selectedOptions];
       const selectedGroups = requestedGroups.flatMap(requested => {
         const option = selectedOptions.find(item =>
@@ -682,7 +774,7 @@ async function addGroupFilter(cdp, campaign, groupId) {
       noMatch: true,
       selectedGroups: [],
       ignoredGroups: requestedGroups,
-      reason: `None of the requested subscriber groups exist in channel ${groupId}. Requested: ${requestedGroups.join("; ")}`,
+      reason: `None of the requested "${filterLabel}" groups exist in channel ${groupId}. Requested: ${requestedGroups.join("; ")}`,
     };
   }
 
@@ -690,7 +782,7 @@ async function addGroupFilter(cdp, campaign, groupId) {
   const verifiedGroupIds = await evalJson(
     cdp,
     `(() => {
-      const select = document.querySelector('select[name="filter[subscription_id][]"]');
+      const select = document.querySelector(${JSON.stringify(selectSelector)});
       if (!select) return [];
       return [...select.selectedOptions].map(option => String(option.value)).filter(Boolean);
     })()`
@@ -699,7 +791,7 @@ async function addGroupFilter(cdp, campaign, groupId) {
   const missingAfterChange = matchedGroupIds.filter((id) => !verifiedGroupIds.includes(id));
   if (missingAfterChange.length) {
     throw new Error(
-      `Senler did not retain subscriber group selection for channel ${groupId}: ${missingAfterChange.join(", ")}`
+      `Senler did not retain "${filterLabel}" selection for channel ${groupId}: ${missingAfterChange.join(", ")}`
     );
   }
 
@@ -712,9 +804,33 @@ async function addGroupFilter(cdp, campaign, groupId) {
   };
 }
 
-async function attachImage(cdp, campaign) {
-  if (!campaign.imagePath) return { skipped: true };
-  const imagePath = resolveProjectPath(campaign.imagePath);
+async function addGroupFilter(cdp, campaign, groupId) {
+  const requestedGroups = [...new Set((campaign.subscriberGroups || []).map((value) => String(value).trim()).filter(Boolean))];
+  return applySubscriberGroupFilter(cdp, {
+    groupId,
+    requestedGroups,
+    selectName: "filter[subscription_id][]",
+    dropdownValue: "subscription_id",
+    filterLabel: "Группа подписчиков",
+  });
+}
+
+// Фильтр Senler "За исключением группы": использует отдельный select
+// filter[ignore_subscription_id][] (вывод из id select2-виджета в DOM Senler,
+// см. senler/FILTERS.md — перед боевой рассылкой стоит проверить через `validate`).
+async function addExcludeGroupFilter(cdp, campaign, groupId) {
+  const requestedGroups = [...new Set((campaign.excludeSubscriberGroups || []).map((value) => String(value).trim()).filter(Boolean))];
+  return applySubscriberGroupFilter(cdp, {
+    groupId,
+    requestedGroups,
+    selectName: "filter[ignore_subscription_id][]",
+    dropdownValue: "ignore_subscription_id",
+    filterLabel: "За исключением группы",
+  });
+}
+
+async function attachImage(cdp, imagePathValue) {
+  const imagePath = resolveProjectPath(imagePathValue);
   await fs.access(imagePath);
   const maxAttempts = 3;
   let lastFailure = null;
@@ -759,6 +875,120 @@ async function attachImage(cdp, campaign) {
   throw new Error(`Image attach failed after ${maxAttempts} attempts: ${lastFailure.error}; ${JSON.stringify(lastFailure)}`);
 }
 
+// Принимает новый массив imagePaths и сохраняет совместимость со старым одиночным imagePath.
+async function attachImages(cdp, campaign) {
+  const imagePaths = [...new Set(
+    (Array.isArray(campaign.imagePaths) && campaign.imagePaths.length
+      ? campaign.imagePaths
+      : [campaign.imagePath])
+      .map((value) => String(value || "").trim())
+      .filter(Boolean)
+  )];
+  if (!imagePaths.length) return { skipped: true, count: 0, items: [] };
+
+  const items = [];
+  for (const imagePath of imagePaths) {
+    items.push({ path: imagePath, ...(await attachImage(cdp, imagePath)) });
+  }
+  return { skipped: false, count: items.length, items };
+}
+
+function isVkVideoUrl(value) {
+  return /^https:\/\/(?:www\.)?(?:vk\.com|vkvideo\.ru)\//i.test(String(value || "").trim());
+}
+
+async function attachVideo(cdp, videoUrl) {
+  if (!isVkVideoUrl(videoUrl)) throw new Error(`Invalid VK video URL: ${videoUrl}`);
+  const before = await evalJson(cdp, `document.querySelectorAll(".message_attachments .attachment_item").length`);
+  const opened = await evalJson(
+    cdp,
+    `(() => {
+      const visible = el => !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+      const describe = el => [el.innerText, el.textContent, el.title, el.getAttribute("aria-label"), el.dataset?.type, el.dataset?.attachmentType]
+        .filter(Boolean).join(" ").trim();
+      const candidates = [...document.querySelectorAll('[data-type],[data-attachment-type],button,a,[role="button"],.btn')]
+        .filter(visible)
+        .filter(el => /(^|\\s)(видео|video)(\\s|$)/i.test(describe(el)));
+      const trigger = candidates.find(el => /video/i.test(String(el.dataset?.type || el.dataset?.attachmentType || "")))
+        || candidates.find(el => /^(добавить |прикрепить )?(видео|video)$/i.test(describe(el)))
+        || candidates[0];
+      if (trigger) trigger.click();
+      return { clicked: !!trigger, trigger: trigger ? describe(trigger).slice(0, 200) : "", candidates: candidates.map(describe).slice(0, 20) };
+    })()`
+  );
+  if (!opened.clicked) throw new Error(`Senler video attachment control not found: ${JSON.stringify(opened)}`);
+
+  await sleep(500);
+  const filled = await evalJson(
+    cdp,
+    `(() => {
+      const videoUrl = ${JSON.stringify(videoUrl)};
+      const visible = el => !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+      const roots = [...document.querySelectorAll('.modal.show,[role="dialog"],.popover.show,.dropdown-menu.show')].filter(visible);
+      const root = roots.find(el => /видео|video/i.test(el.innerText || el.textContent || "")) || roots.at(-1) || document;
+      const inputs = [...root.querySelectorAll('input[type="url"],input[type="text"],textarea')].filter(visible);
+      const input = inputs.find(el => /ссыл|url|видео|video/i.test([el.placeholder, el.name, el.id, el.getAttribute("aria-label")].filter(Boolean).join(" ")))
+        || (inputs.length === 1 ? inputs[0] : null);
+      if (!input) return { filled: false, roots: roots.length, inputs: inputs.map(el => ({ id: el.id, name: el.name, placeholder: el.placeholder })).slice(0, 20) };
+      const prototype = input instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+      const setter = Object.getOwnPropertyDescriptor(prototype, "value")?.set;
+      if (setter) setter.call(input, videoUrl); else input.value = videoUrl;
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+      input.focus();
+      return { filled: true, id: input.id || "", name: input.name || "", placeholder: input.placeholder || "" };
+    })()`
+  );
+  if (!filled.filled) throw new Error(`Senler video URL input not found: ${JSON.stringify(filled)}`);
+
+  const startedAt = Date.now();
+  let diagnostics = null;
+  while (Date.now() - startedAt < 30000) {
+    diagnostics = await evalJson(
+      cdp,
+      `(() => {
+        const videoUrl = ${JSON.stringify(videoUrl)};
+        const before = ${before};
+        const visible = el => !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+        const after = document.querySelectorAll(".message_attachments .attachment_item").length;
+        if (after > before) return { attached: true, before, after };
+        const input = [...document.querySelectorAll('input,textarea')].find(el => el.value === videoUrl);
+        const visibleRoots = [...document.querySelectorAll('.modal.show,[role="dialog"],.popover.show,.dropdown-menu.show')].filter(visible);
+        const root = input?.closest('.modal.show,[role="dialog"],.popover.show,.dropdown-menu.show')
+          || visibleRoots.find(el => /видео|video/i.test(el.innerText || el.textContent || ""))
+          || input?.parentElement?.parentElement
+          || null;
+        const links = root ? [...root.querySelectorAll('a,[role="option"],.list-group-item,.dropdown-item')].filter(visible) : [];
+        const matchingResult = links.find(el => /video|видео/i.test((el.href || "") + " " + (el.innerText || el.textContent || "")));
+        if (matchingResult) matchingResult.click();
+        const buttons = root ? [...root.querySelectorAll('button,a,.btn,[role="button"]')].filter(visible) : [];
+        const action = buttons.find(el => /^(найти|поиск|добавить|прикрепить|выбрать|сохранить)$/i.test((el.innerText || el.value || el.title || "").trim()));
+        if (action) action.click();
+        return {
+          attached: false,
+          before,
+          after,
+          hasInput: !!input,
+          clickedResult: !!matchingResult,
+          clickedAction: action ? (action.innerText || action.value || action.title || "").trim() : "",
+          buttons: buttons.map(el => (el.innerText || el.value || el.title || "").trim()).filter(Boolean).slice(0, 20)
+        };
+      })()`
+    );
+    if (diagnostics.attached) return { url: videoUrl, ...diagnostics };
+    await sleep(800);
+  }
+  throw new Error(`Senler video attachment timed out for ${videoUrl}: ${JSON.stringify(diagnostics)}`);
+}
+
+async function attachVideos(cdp, campaign) {
+  const videoUrls = [...new Set((campaign.videoUrls || []).map((value) => String(value || "").trim()).filter(Boolean))];
+  if (!videoUrls.length) return { skipped: true, count: 0, items: [] };
+  const items = [];
+  for (const videoUrl of videoUrls) items.push(await attachVideo(cdp, videoUrl));
+  return { skipped: false, count: items.length, items };
+}
+
 async function activateFromModal(cdp) {
   return evalJson(
     cdp,
@@ -770,6 +1000,58 @@ async function activateFromModal(cdp) {
       return { modal: !!modal, clicked: !!btn, text: modal?.innerText.trim().replace(/\\s+/g, " ").slice(0, 300) || "" };
     })()`
   );
+}
+
+async function saveMailing(cdp) {
+  const clicked = await evalJson(
+    cdp,
+    `(() => {
+      const visible = el => !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+      for (const notice of document.querySelectorAll('.alert,.toast,.notification,.invalid-feedback,.text-danger')) {
+        if (/Рассылка не заполнена/i.test(notice.innerText || notice.textContent || "")) notice.remove();
+      }
+      const controls = [...document.querySelectorAll('button,input[type="submit"],a.btn')]
+        .filter(visible)
+        .filter(el => !el.disabled)
+        .filter(el => (el.innerText || el.value || "").trim() === "Сохранить");
+      const btn = controls.find(el => el.matches('button[type="submit"],input[type="submit"]'))
+        || controls.find(el => el.tagName === "BUTTON")
+        || controls[0];
+      if (btn) btn.click();
+      return {
+        clicked: !!btn,
+        tag: btn?.tagName || "",
+        type: btn?.getAttribute("type") || "",
+        className: String(btn?.className || "")
+      };
+    })()`
+  );
+  if (!clicked.clicked) throw new Error(`Senler save button not found: ${JSON.stringify(clicked)}`);
+
+  const startedAt = Date.now();
+  let status = null;
+  while (Date.now() - startedAt < 10000) {
+    status = await evalJson(
+      cdp,
+      `(() => {
+        const visible = el => !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+        const messages = [...document.querySelectorAll('.modal.show,.alert,.toast,.notification,.invalid-feedback,.text-danger')]
+          .filter(visible)
+          .map(el => (el.innerText || el.textContent || "").replace(/\\s+/g, " ").trim())
+          .filter(Boolean);
+        const body = document.body.innerText || "";
+        return {
+          saved: messages.some(text => /Рассылка сохранена/i.test(text)) || /Рассылка сохранена/i.test(body),
+          empty: messages.some(text => /Рассылка не заполнена/i.test(text)) || /Рассылка не заполнена/i.test(body),
+          messages: messages.slice(-10),
+          url: location.href
+        };
+      })()`
+    );
+    if (status.saved || status.empty) return { ...clicked, ...status };
+    await sleep(400);
+  }
+  throw new Error(`Senler did not confirm mailing save: ${JSON.stringify({ ...clicked, ...status })}`);
 }
 
 async function createGroup(cdp, groupId, campaign, shouldActivate) {
@@ -799,29 +1081,54 @@ async function createGroup(cdp, groupId, campaign, shouldActivate) {
   await waitFor(cdp, `!!document.querySelector(".ql-editor") && !!window.Quill`, 30000);
   const fields = await fillEditor(cdp, campaign);
   const dateFilter = await addDateFilter(cdp, campaign);
+  dateFilter.emptyAudienceFallback = await removeDateFilterWhenAudienceIsEmpty(cdp);
   const groupFilter = await addGroupFilter(cdp, campaign, groupId);
-  const image = await attachImage(cdp, campaign);
-  const saved = await evalJson(
-    cdp,
-    `(() => {
-      const btn = [...document.querySelectorAll("a,button,input,div")]
-        .find(el => (el.innerText || el.value || "").trim() === "Сохранить" && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length));
-      if (btn) btn.click();
-      return !!btn;
-    })()`
-  );
-  await sleep(5000);
-  const activationAllowed = shouldActivate && !groupFilter.noMatch;
+  // Как и остальные фильтры выше, ошибка здесь останавливает создание рассылки целиком
+  // (не глушим исключение: тихий пропуск означал бы, что исключённая группа всё же получит сообщение).
+  const excludeGroupFilter = await addExcludeGroupFilter(cdp, campaign, groupId);
+  // Финальная проверка аудитории после ВСЕХ фильтров (дата + группы + исключения).
+  // Если получателей 0 — рассылку сохраняем как черновик, но не активируем,
+  // и не прерываем обработку остальных групп.
+  const recipients = await waitForRecipientCount(cdp);
+  if (recipients.found && recipients.count === 0) {
+    console.warn(`[warning] Channel ${groupId}: 0 recipients after filters; mailing will be saved but not activated`);
+  }
+  let image;
+  try {
+    image = await attachImages(cdp, campaign);
+  } catch (error) {
+    image = { ok: false, skipped: true, error: error.message };
+    console.warn(`[warning] Images were not attached; saving the mailing without images: ${error.message}`);
+  }
+
+  let video;
+  try {
+    video = await attachVideos(cdp, campaign);
+  } catch (error) {
+    video = { ok: false, skipped: true, error: error.message };
+    console.warn(`[warning] Videos were not attached; saving the mailing without videos: ${error.message}`);
+  }
+  let saved = await saveMailing(cdp);
+  if (saved.empty) {
+    console.warn("[warning] Senler reported an empty mailing; refilling the editor and retrying save");
+    await fillEditor(cdp, campaign);
+    saved = await saveMailing(cdp);
+  }
+  if (!saved.saved) throw new Error(`Senler rejected mailing save: ${JSON.stringify(saved)}`);
+  const zeroRecipients = recipients.found && recipients.count === 0;
+  const activationAllowed = shouldActivate && !groupFilter.noMatch && !zeroRecipients;
   const activation = activationAllowed
     ? await activateFromModal(cdp)
     : {
         skipped: true,
         reason: groupFilter.noMatch
           ? "subscriber groups not found in channel; mailing left inactive"
-          : "activation not requested"
+          : zeroRecipients
+            ? "zero recipients after filters; mailing left inactive"
+            : "activation not requested"
       };
   await sleep(3500);
-  return { fields, dateFilter, groupFilter, image, saved, activation };
+  return { fields, dateFilter, groupFilter, excludeGroupFilter, recipients, image, video, saved, activation };
 }
 
 async function run() {
@@ -832,7 +1139,14 @@ async function run() {
   const campaignPath = path.resolve(ROOT, args.campaign || "senler/campaign.example.json");
   const groups = await readJson(groupsPath);
   const campaign = await readJson(campaignPath);
-  const selected = selectedGroups(groups, args.only || "all").filter((g) => !Object.values(groups.excluded || {}).flat().includes(g.id));
+  const requestedChannels = String(args.channels || "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+  const selected = selectSenlerChannels(groups, { pick: args.only || "all", channelIds: requestedChannels });
+  if (requestedChannels.length && !selected.length) {
+    throw new Error("No Senler channels match the selected subjects and channel groups");
+  }
 
   if (command === "help") {
     console.log(`Usage:

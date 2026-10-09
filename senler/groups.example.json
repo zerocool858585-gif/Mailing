@@ -9,6 +9,22 @@
     ],
     "common": [
       "436769"
+    ],
+    "separate": [
+      "1126691"
     ]
+  },
+  "standalone": {
+    "dima_dal": {
+      "name": "Жми на пеДАЛЬ к ИС | Дима Даль",
+      "channel": "1126691",
+      "url": "https://senler.ru/cabinet/home/1126691"
+    }
+  },
+  "subjects": {
+    "biology": {
+      "name": "Биология",
+      "channels": ["430334", "888302"]
+    }
   }
 }

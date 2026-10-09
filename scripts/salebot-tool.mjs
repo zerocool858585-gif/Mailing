@@ -264,25 +264,49 @@ async function openMessageEditor(cdp, messageId) {
   const result = await evalJson(
     cdp,
     `(() => new Promise((resolve) => {
-      window.ajaxEditMessage(${JSON.stringify(messageId)})
-        .done((code) => {
-          try {
-            window.eval(code);
-            setTimeout(() => resolve({ ok: true, form: document.querySelector("form")?.id || "" }), 800);
-          } catch (error) {
-            resolve({ ok: false, error: error.stack || error.message });
-          }
-        })
-        .fail((xhr) => resolve({ ok: false, error: xhr.responseText || xhr.statusText || "SaleBot edit failed" }));
+      if (typeof window.ajaxEditMessage !== "function") {
+        resolve({ ok: false, error: "SaleBot ajaxEditMessage is not available" });
+        return;
+      }
+
+      let request;
+      try {
+        request = window.ajaxEditMessage(${JSON.stringify(messageId)});
+      } catch (error) {
+        resolve({ ok: false, error: error.stack || error.message });
+        return;
+      }
+
+      // Older SaleBot versions return a jqXHR containing editor code. Newer
+      // versions may open the editor themselves and return null/undefined.
+      if (!request || typeof request.done !== "function") {
+        resolve({ ok: true, transport: "dom", returned: request == null ? String(request) : typeof request });
+        return;
+      }
+
+      request.done((code) => {
+        try {
+          if (typeof code === "string" && code.trim()) window.eval(code);
+          setTimeout(() => resolve({ ok: true, transport: "jqxhr", form: document.querySelector("form")?.id || "" }), 800);
+        } catch (error) {
+          resolve({ ok: false, error: error.stack || error.message });
+        }
+      });
+
+      if (typeof request.fail === "function") {
+        request.fail((xhr) => resolve({ ok: false, error: xhr?.responseText || xhr?.statusText || "SaleBot edit failed" }));
+      }
     }))()`
   );
   if (!result?.ok) throw new Error(`SaleBot editor open failed for ${messageId}: ${result?.error || "unknown error"}`);
   await waitFor(cdp, `!!document.querySelector("#edit_message_${messageId} #message_file")`, 20000);
 }
 
-async function attachImageToMessage(cdp, messageId, imagePath) {
-  imagePath = resolveProjectPath(imagePath);
-  await fs.access(imagePath);
+async function attachImagesToMessage(cdp, messageId, imagePathValues) {
+  const imagePaths = [...new Set((imagePathValues || []).map((value) => String(value || "").trim()).filter(Boolean))]
+    .map(resolveProjectPath);
+  if (!imagePaths.length) return { skipped: true, messageId, uploads: [] };
+  for (const imagePath of imagePaths) await fs.access(imagePath);
   await openMessageEditor(cdp, messageId);
   await evalJson(
     cdp,
@@ -293,30 +317,34 @@ async function attachImageToMessage(cdp, messageId, imagePath) {
       return document.querySelector("#message_attachment_type")?.value === "image";
     })()`
   );
-  await setFileInput(cdp, "#message_file", imagePath);
-  const upload = await evalJson(
-    cdp,
-    `(() => new Promise((resolve) => {
-      const before = [...document.querySelectorAll(".ident_id")].map((el) => el.textContent.trim()).filter(Boolean).length;
-      document.querySelector("#message_file").dispatchEvent(new Event("change", { bubbles: true }));
-      const start = Date.now();
-      const timer = setInterval(() => {
-        const ids = [...document.querySelectorAll(".ident_id")].map((el) => el.textContent.trim()).filter(Boolean);
-        const loading = !!document.querySelector(".file_loading");
-        const previewText = document.querySelector(".preview_files_container")?.innerText || "";
-        const toast = [...document.querySelectorAll(".toast,.toast-content")].map((el) => el.innerText).join("\\n");
-        if (ids.length > before && !loading) {
-          clearInterval(timer);
-          resolve({ ok: true, before, after: ids.length, ids, previewText });
-        }
-        if (Date.now() - start > 45000) {
-          clearInterval(timer);
-          resolve({ ok: false, before, after: ids.length, ids, loading, previewText, toast });
-        }
-      }, 500);
-    }))()`
-  );
-  if (!upload?.ok) throw new Error(`SaleBot image upload failed for ${messageId}: ${JSON.stringify(upload)}`);
+  const uploads = [];
+  for (const imagePath of imagePaths) {
+    await setFileInput(cdp, "#message_file", imagePath);
+    const upload = await evalJson(
+      cdp,
+      `(() => new Promise((resolve) => {
+        const before = [...document.querySelectorAll(".ident_id")].map((el) => el.textContent.trim()).filter(Boolean).length;
+        document.querySelector("#message_file").dispatchEvent(new Event("change", { bubbles: true }));
+        const start = Date.now();
+        const timer = setInterval(() => {
+          const ids = [...document.querySelectorAll(".ident_id")].map((el) => el.textContent.trim()).filter(Boolean);
+          const loading = !!document.querySelector(".file_loading");
+          const previewText = document.querySelector(".preview_files_container")?.innerText || "";
+          const toast = [...document.querySelectorAll(".toast,.toast-content")].map((el) => el.innerText).join("\\n");
+          if (ids.length > before && !loading) {
+            clearInterval(timer);
+            resolve({ ok: true, before, after: ids.length, ids, previewText });
+          }
+          if (Date.now() - start > 45000) {
+            clearInterval(timer);
+            resolve({ ok: false, before, after: ids.length, ids, loading, previewText, toast });
+          }
+        }, 500);
+      }))()`
+    );
+    if (!upload?.ok) throw new Error(`SaleBot image upload failed for ${messageId} (${imagePath}): ${JSON.stringify(upload)}`);
+    uploads.push({ path: imagePath, upload });
+  }
   const saved = await evalJson(
     cdp,
     `(() => new Promise((resolve) => {
@@ -328,7 +356,7 @@ async function attachImageToMessage(cdp, messageId, imagePath) {
       }), 5000);
     }))()`
   );
-  return { ok: true, messageId, upload, saved };
+  return { ok: true, messageId, count: uploads.length, uploads, saved };
 }
 
 function splitDateTime(value) {
@@ -597,11 +625,16 @@ async function run() {
     if (!args["confirm-create"]) throw new Error("Refusing to create SaleBot blocks without --confirm-create");
     if (command === "schedule" && !args["confirm-schedule"]) throw new Error("Refusing to schedule SaleBot mailings without --confirm-schedule");
     const result = await createBlocks(tab.cdp, campaign);
-    if (result.ok && campaign.imagePath && !campaign.imageUrl) {
+    const imagePaths = [...new Set(
+      (Array.isArray(campaign.imagePaths) && campaign.imagePaths.length ? campaign.imagePaths : [campaign.imagePath])
+        .map((value) => String(value || "").trim())
+        .filter(Boolean)
+    )];
+    if (result.ok && imagePaths.length && !campaign.imageUrl) {
       result.attachments = [];
       for (const item of result.items || []) {
         if (!item.textId) continue;
-        result.attachments.push(await attachImageToMessage(tab.cdp, item.textId, campaign.imagePath));
+        result.attachments.push(await attachImagesToMessage(tab.cdp, item.textId, imagePaths));
       }
     }
     if (result.ok && (command === "create-drafts" || command === "schedule")) {

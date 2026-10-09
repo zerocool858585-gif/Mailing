@@ -10,6 +10,7 @@
   "buttonUrl": "https://example.com",
   "buttonType": "inline",
   "imagePath": "",
+  "imagePaths": [],
   "imageUrl": "",
   "selectedAudienceIds": [],
   "selectedAudiences": [],

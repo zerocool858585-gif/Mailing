@@ -107,36 +107,6 @@ function runSalebot(args) {
   return runTool(path.join(ROOT, "scripts", "salebot-tool.mjs"), args, "salebot");
 }
 
-// Серверная проверка сохранённой кампании SaleBot перед созданием блоков/рассылок.
-// Дублирует проверку в интерфейсе и дополнительно проверяет, что файлы картинок существуют.
-async function validateSaleBotCampaign(campaign) {
-  const problems = [];
-  if (!String(campaign?.name || "").trim()) problems.push("Не заполнено название рассылки.");
-  const sendDate = String(campaign?.sendDate || "").trim();
-  if (!/^\d{2}\.\d{2}\.\d{4} \d{2}:\d{2}$/.test(sendDate)) {
-    problems.push(`Дата рассылки должна быть в формате ДД.ММ.ГГГГ ЧЧ:мм, сейчас: «${sendDate}».`);
-  }
-  if (!String(campaign?.message || "").trim()) problems.push("Пустой текст блока.");
-  const buttons = Array.isArray(campaign?.buttons) ? campaign.buttons : [];
-  const fullButtons = buttons.filter((b) => String(b?.text || "").trim() && /^https?:\/\/\S+$/i.test(String(b?.url || "").trim()));
-  if (!fullButtons.length) problems.push("Нет ни одной кнопки с текстом и корректной ссылкой.");
-  if (fullButtons.length !== buttons.filter((b) => String(b?.text || "").trim() || String(b?.url || "").trim()).length) {
-    problems.push("Есть кнопки без текста или с некорректной ссылкой.");
-  }
-  if (!Array.isArray(campaign?.selectedAudiences) || !campaign.selectedAudiences.length) {
-    problems.push("Не выбрана ни одна аудитория.");
-  }
-  const imagePaths = [...new Set(
-    (Array.isArray(campaign?.imagePaths) && campaign.imagePaths.length ? campaign.imagePaths : [campaign?.imagePath])
-      .map((value) => String(value || "").trim())
-      .filter(Boolean)
-  )];
-  for (const imagePath of imagePaths) {
-    if (!(await exists(path.resolve(ROOT, imagePath)))) problems.push(`Картинка не найдена: ${imagePath}`);
-  }
-  return problems;
-}
-
 // Вся клиентская страница встроена в сервер, поэтому UI не требует отдельной сборки или статики.
 const page = String.raw`<!doctype html>
 <html lang="ru">
@@ -168,8 +138,6 @@ const page = String.raw`<!doctype html>
     .toolbar select { width: auto; min-width: 170px; min-height: 34px; padding: 6px 30px 6px 9px; font-size: 13px; }
     #editor { min-height: 360px; border: 1px solid #c7d0dc; border-radius: 0 0 6px 6px; padding: 12px; line-height: 1.4; white-space: pre-wrap; outline: none; background: #fff; overflow: auto; }
     #sbEditor { min-height: 280px; border: 1px solid #c7d0dc; border-radius: 0 0 6px 6px; padding: 12px; line-height: 1.4; white-space: pre-wrap; outline: none; background: #fff; overflow: auto; }
-    .field-error, #sbEditor.field-error { border-color: #dc2626 !important; box-shadow: 0 0 0 2px rgba(220,38,38,.15) !important; }
-    #sbAudiences.field-error { border: 1px solid #dc2626; border-radius: 6px; padding: 6px; }
     #editor:focus, #sbEditor:focus { border-color: #2563eb; box-shadow: 0 0 0 2px rgba(37,99,235,.12); }
     #editor a, #sbEditor a { color: #2563eb; text-decoration: underline; text-underline-offset: 2px; }
     #editor code, #sbEditor code { padding: 1px 4px; border-radius: 4px; background: #eef2f7; color: #111827; font-family: Consolas, Menlo, monospace; font-size: .92em; }
@@ -1185,118 +1153,15 @@ const page = String.raw`<!doctype html>
     $("sbAddButton").onclick = () => renderSaleBotButtons(saleBotButtonRows().concat({ text: "", url: "" }));
     $("sbOpen").onclick = () => salebotCommand("open").catch(e => log(e.message));
     $("sbInspect").onclick = () => salebotCommand("inspect").catch(e => log(e.message));
-    // Проверяет дату SaleBot: заполнены и дата, и время, значение реально существует в календаре.
-    function saleBotSendDateInfo() {
-      const input = $("sbSendDate");
-      const value = String(input.value || "").trim();
-      const match = value.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/);
-      if (!match || !input.checkValidity()) return null;
-      const [, year, month, day, hours, minutes] = match;
-      const date = new Date(Number(year), Number(month) - 1, Number(day), Number(hours), Number(minutes));
-      const isExact = date.getFullYear() === Number(year)
-        && date.getMonth() === Number(month) - 1
-        && date.getDate() === Number(day)
-        && date.getHours() === Number(hours)
-        && date.getMinutes() === Number(minutes);
-      if (!isExact) return null;
-      return { date, label: day + "." + month + "." + year + " в " + hours + ":" + minutes };
-    }
-    // Проверяет все поля вкладки SaleBot перед «Выполнить»: собирает список проблем и подсвечивает поля.
-    function validateSaleBotForm(command) {
-      const errors = [];
-      const marked = [];
-      const mark = (el) => { if (el) { el.classList.add("field-error"); marked.push(el); } };
-      document.querySelectorAll("#panelSaleBot .field-error").forEach(el => el.classList.remove("field-error"));
-
-      if (!$("sbName").value.trim()) {
-        errors.push("Не заполнено название рассылки.");
-        mark($("sbName"));
-      }
-
-      const dateInfo = saleBotSendDateInfo();
-      if (!dateInfo) {
-        errors.push("Не указаны или некорректны дата и время рассылки.");
-        mark($("sbSendDate"));
-      } else if ((command === "schedule" || command === "create-drafts") && dateInfo.date.getTime() <= Date.now()) {
-        errors.push("Дата рассылки уже прошла: " + dateInfo.label + ".");
-        mark($("sbSendDate"));
-      }
-
-      if (!$("sbEditor").innerText.trim()) {
-        errors.push("Пустой текст блока.");
-        mark($("sbEditor"));
-      }
-
-      const rows = [...document.querySelectorAll("[data-sb-button-row]")];
-      let completeButtons = 0;
-      let brokenButtons = 0;
-      rows.forEach((row, index) => {
-        const textInput = row.querySelector("[data-sb-button-text]");
-        const urlInput = row.querySelector("[data-sb-button-url]");
-        const text = textInput?.value.trim() || "";
-        const url = urlInput?.value.trim() || "";
-        if (!text && !url) return;
-        const n = index + 1;
-        let ok = true;
-        if (!text) { errors.push("Кнопка " + n + ": нет текста."); mark(textInput); ok = false; }
-        if (!url) { errors.push("Кнопка " + n + ": нет ссылки."); mark(urlInput); ok = false; }
-        else if (!/^https?:\/\/\S+$/i.test(url)) { errors.push("Кнопка " + n + ": ссылка должна начинаться с http:// или https:// и не содержать пробелов."); mark(urlInput); ok = false; }
-        if (ok) completeButtons++; else brokenButtons++;
-      });
-      if (!completeButtons && !brokenButtons) {
-        errors.push("Нет ни одной кнопки с текстом и ссылкой.");
-        const first = rows[0];
-        if (first) { mark(first.querySelector("[data-sb-button-text]")); mark(first.querySelector("[data-sb-button-url]")); }
-      }
-
-      if (!selectedSaleBotAudienceIds().length) {
-        errors.push("Не выбрана ни одна аудитория.");
-        mark($("sbAudiences"));
-      }
-
-      const imageLines = String($("sbImagePaths").value || "").split(/\r?\n/).map(x => x.trim()).filter(Boolean);
-      const badImage = imageLines.find(line => !/\.(jpe?g|png|gif|webp)$/i.test(line));
-      if (badImage) {
-        errors.push("Похоже, это не путь к картинке: " + badImage);
-        mark($("sbImagePaths"));
-      }
-
-      return { errors, firstField: marked[0] || null, dateInfo };
-    }
-    // Снимает красную подсветку, как только поле начинают исправлять.
-    $("panelSaleBot").addEventListener("input", (event) => {
-      event.target.closest?.(".field-error")?.classList.remove("field-error");
-    });
-    $("panelSaleBot").addEventListener("change", (event) => {
-      if (event.target.closest?.("#sbAudiences")) $("sbAudiences").classList.remove("field-error");
-    });
     $("sbRunFinal").onclick = async () => {
       const command = $("sbFinalAction").value;
-      const { errors, firstField, dateInfo } = validateSaleBotForm(command);
-      if (errors.length) {
-        const text = "Нельзя запустить SaleBot — исправьте поля:\n\n• " + errors.join("\n• ");
-        log(text);
-        alert(text);
-        firstField?.focus?.();
-        return;
-      }
       const confirmText = {
         "create-blocks": "Создать комментарий и текстовый блок в SaleBot?",
         "create-drafts": "Создать блоки и черновики рассылок в SaleBot?",
         "schedule": "Создать блоки и запланировать рассылки в SaleBot?"
       }[command] || "Выполнить выбранное действие в SaleBot?";
-      const audienceCount = selectedSaleBotAudienceIds().length;
-      if (!confirm(confirmText + "\n\nДата рассылки: " + dateInfo.label + "\nАудиторий: " + audienceCount + "\n\nВсё верно?")) return;
-      const button = $("sbRunFinal");
-      if (button.disabled) return;
-      button.disabled = true;
-      try {
-        await salebotCommand(command);
-      } catch (error) {
-        log(error.message);
-      } finally {
-        button.disabled = false;
-      }
+      if (!confirm(confirmText)) return;
+      salebotCommand(command).catch(e => log(e.message));
     };
     // Сохраняет текущий массив аудиторий SaleBot на сервере.
     async function saveAudiences() {
@@ -1888,15 +1753,7 @@ const server = http.createServer(async (req, res) => {
       const allowed = new Set(["open", "inspect", "create-blocks", "create-drafts", "schedule"]);
       if (!allowed.has(data.command)) return send(res, 400, JSON.stringify({ error: "bad salebot command" }));
       const args = [data.command, "--campaign", "salebot/campaign.ui.json"];
-      if (data.command === "create-blocks" || data.command === "create-drafts" || data.command === "schedule") {
-        const campaign = await readJson(SALEBOT_CAMPAIGN_FILE);
-        const problems = await validateSaleBotCampaign(campaign);
-        if (problems.length) {
-          await appendLog("salebot.validation.failed", { command: data.command, problems });
-          return send(res, 400, JSON.stringify({ error: "Кампания SaleBot заполнена не полностью:\n• " + problems.join("\n• ") }));
-        }
-        args.push("--confirm-create");
-      }
+      if (data.command === "create-blocks" || data.command === "create-drafts" || data.command === "schedule") args.push("--confirm-create");
       if (data.command === "schedule") args.push("--confirm-schedule");
       await appendLog("salebot.start", { command: data.command, args });
       const result = await runSalebot(args);
